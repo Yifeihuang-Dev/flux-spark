@@ -71,4 +71,22 @@ python3 fluxspark.py "..." --tests '...' > out.py
 ## 当前边界
 
 - **CLI 目前只支持 Python**。实测模型其实会写 SQL（3/3 语义正确，用的标准窗口函数）、Ruby、Bash、Rust——限制在包装器而非模型。多语言改造方案见 `scripts/probe_multilang.py`。
-- 默认模型路径 ` /Volumes/LLM/hf/MiniCPM5-2B-SFT-MLX-4bit` 是本机外置 SSD，换机器请用 `--model` 指定自己的 SFT 基座——流水线对基座是中立的。
+- 默认模型路径 ` /Volumes/LLM/hf/MiniCPM5-2B-SFT-MLX-4bit` 是本机外置 SSD，换机器请用 `--model` 指定自己的 SFT 基座——流水线对基座是中立的。权重**不入库**，原因见下。
+
+## 模型权重为什么不入库
+
+用的是 `MiniCPM5-2B-SFT` 的 **4-bit MLX 量化版本**（1.3 GB）。它没被放进这个仓库，也不需要：
+
+1. **放不下。** GitHub 单文件硬上限 100 MB，1.3 GB 的权重会直接被拒。走 Git LFS 也不行：免费额度仅 1 GB 存储 + 1 GB/月带宽，这一个文件就撑爆了。
+2. **它不是本项目的产物。** 权重是从公开基座 `openbmb/MiniCPM5-2B-SFT` 量化而来——架构超参逐项一致（`hidden_size 2048` / `42 层` / `16 头` / `vocab 130560` / `131072 上下文`），本地只是多了 `bits=4, group_size=64` 的量化配置；转换日志写着 `Quantized model with 4.501 bits per weight`。
+3. **一行就能复现。** 与其让别人下载 1.3 GB，不如本地转换：
+
+```bash
+mlx_lm.convert --hf-path openbmb/MiniCPM5-2B-SFT \
+               --mlx-path ./MiniCPM5-2B-SFT-MLX-4bit \
+               -q --q-bits 4 --q-group-size 64 --dtype bfloat16
+
+./scripts/fetch_models.sh base        # 脚本里已内置这一步
+```
+
+> 若确实想发布一份可直接下载的权重（比如让别人免去做本地转换），正确的去处是 **Hugging Face Hub**：免费、容量不限、专为权重设计，还带断点续传。`mlx_lm.convert` 自带 `--upload-repo` 参数，一条命令就能推上去。GitHub 是放代码的地方，HuggingFace 才是放模型的地方。

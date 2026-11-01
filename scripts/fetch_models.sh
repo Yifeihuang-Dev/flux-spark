@@ -60,12 +60,31 @@ fallback() {
     model.safetensors.index.json tokenizer.json tokenizer_config.json vocab.json
 }
 
+# 主力模型：CLI 默认使用的就是这个。
+# 它不是下载的，而是从公开基座 openbmb/MiniCPM5-2B-SFT 本地量化出来的，
+# 所以不占仓库体积——一行命令就能复现（架构逐项一致，量化 4.501 bits/weight）。
+base() {
+  echo "== 主力: MiniCPM5-2B-SFT-MLX-4bit（从公开基座本地量化）=="
+  local out="$DEST/MiniCPM5-2B-SFT-MLX-4bit"
+  if [ -s "$out/model.safetensors" ]; then
+    echo "  跳过(已存在) $out"
+    return
+  fi
+  if ! command -v mlx_lm.convert >/dev/null 2>&1; then
+    echo "  缺少 mlx_lm：请先 pip install mlx-lm"
+    return 1
+  fi
+  mlx_lm.convert --hf-path openbmb/MiniCPM5-2B-SFT --mlx-path "$out" \
+    -q --q-bits 4 --q-group-size 64 --dtype bfloat16
+}
+
 case "${1:-all}" in
+  base)     base ;;
   router)   router ;;
   executor) executor ;;
   reviewer) reviewer ;;
   fallback) fallback ;;
-  all)      router; executor; reviewer ;;
+  all)      base; router; executor; reviewer ;;
   *) echo "未知参数: $1"; exit 1 ;;
 esac
 
