@@ -1,0 +1,37 @@
+# MiniCPM5-2B 执行器 LoRA 微调配置
+# 步数按本机算力（MLX GPU ~1.9 TFLOPS，2B 模型约 50-80 tokens/s）压缩过，
+# 目标：一晚上（约 8 小时）跑完，且每 50 步落一个 checkpoint。
+
+model: /Volumes/LLM/hf/openbmb__MiniCPM5-2B-MLX
+data: /Volumes/LLM/datasets/magicoder_mlx
+train: true
+
+# 输出
+adapter_path: /Volumes/LLM/adapters/executor-v1
+save_every: 50
+
+# 训练规模
+# 实测 58 tok/s、约 17.6s/步，1000 步约 5 小时；
+# 即使散热降频到 40 tok/s 也约 7 小时，能在一晚内跑完并留余量。
+iters: 1000
+batch_size: 4
+max_seq_length: 1024
+num_layers: 16
+learning_rate: 1.0e-5
+grad_checkpoint: true
+
+# 只对 assistant 回答部分计算 loss，不要把问题也学进去
+mask_prompt: true
+
+# 日志与验证
+steps_per_report: 10
+steps_per_eval: 100
+val_batches: 20
+
+lora_parameters:
+  rank: 16
+  # 注意：mlx-lm 用的是 scale，不是其他框架常见的 alpha
+  scale: 32.0
+  dropout: 0.0
+
+seed: 42
