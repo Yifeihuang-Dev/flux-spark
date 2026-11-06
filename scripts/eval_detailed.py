@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""精细版编码能力评估。
+"""Detailed coding evaluation.
 
-相比 eval_coding.py 的单次通过/失败，本脚本做四件事：
-  1. 多次采样：每题跑 N 遍，看是稳定会做还是碰巧蒙对
-  2. 失败分类：语法错误 / 逻辑错误 / 格式问题，而不是笼统的 FAIL
-  3. 分题型统计：数组 / 字符串 / 数学 / 排序查找 / 结构转换
-  4. 输出风格：代码长度、是否先说废话、是否用围栏、是否加类型注解
+Unlike eval_coding.py's single pass/fail, this script does four things:
+  1. Repeated sampling: run each task N times to separate stable skill from luck
+  2. Failure classification: syntax / logic / format, instead of a flat FAIL
+  3. Per-category stats: arrays / strings / math / sorting / structure transforms
+  4. Output style: code length, preamble chatter, fences, type hints
 
-用法:
-  python3 eval_detailed.py --model <基座路径> --repeat 3 --out base.json
-  python3 eval_detailed.py --model <基座路径> --adapter <adapter目录> --repeat 3 --out tuned.json
+Usage:
+  python3 eval_detailed.py --model <base path> --repeat 3 --out base.json
+  python3 eval_detailed.py --model <base path> --adapter <adapter dir> --repeat 3 --out tuned.json
 """
 
 import argparse
@@ -22,32 +22,32 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from eval_coding import TASKS, extract_code  # noqa: E402
 
-# 题目分类，用于分维度统计
+# Task categories, for per-dimension statistics
 CATEGORY = {
-    "two_sum": "数组", "dedup_keep_order": "数组", "flatten_nested": "数组",
-    "max_subarray_sum": "数组", "rotate_list": "数组", "chunk_list": "数组",
-    "list_intersection": "数组", "max_pair_product": "数组",
-    "find_missing_number": "数组",
-    "is_palindrome": "字符串", "word_count": "字符串", "reverse_string": "字符串",
-    "count_vowels": "字符串", "longest_common_prefix": "字符串",
-    "is_anagram": "字符串", "caesar_cipher": "字符串", "valid_parentheses": "字符串",
-    "fibonacci": "数学", "factorial": "数学", "is_prime": "数学", "gcd": "数学",
-    "sum_of_digits": "数学", "is_power_of_two": "数学", "climbing_stairs": "数学",
-    "roman_to_int": "数学", "fizzbuzz": "数学",
-    "binary_search": "排序查找", "merge_sorted": "排序查找", "sort_list": "排序查找",
-    "matrix_transpose": "结构转换", "dict_invert": "结构转换",
+    "two_sum": "arrays", "dedup_keep_order": "arrays", "flatten_nested": "arrays",
+    "max_subarray_sum": "arrays", "rotate_list": "arrays", "chunk_list": "arrays",
+    "list_intersection": "arrays", "max_pair_product": "arrays",
+    "find_missing_number": "arrays",
+    "is_palindrome": "strings", "word_count": "strings", "reverse_string": "strings",
+    "count_vowels": "strings", "longest_common_prefix": "strings",
+    "is_anagram": "strings", "caesar_cipher": "strings", "valid_parentheses": "strings",
+    "fibonacci": "math", "factorial": "math", "is_prime": "math", "gcd": "math",
+    "sum_of_digits": "math", "is_power_of_two": "math", "climbing_stairs": "math",
+    "roman_to_int": "math", "fizzbuzz": "math",
+    "binary_search": "sorting/searching", "merge_sorted": "sorting/searching", "sort_list": "sorting/searching",
+    "matrix_transpose": "structure", "dict_invert": "structure",
 }
 
-# 输出风格探针
+# Output-style probes
 HAS_FENCE = re.compile(r"```")
 HAS_TYPE_HINT = re.compile(r"->|:\s*(int|str|list|dict|bool|float)")
 HAS_DOCSTRING = re.compile(r'"""|\'\'\'')
 
 
 def analyse_style(raw: str, code: str) -> dict:
-    """分析一次生成的输出风格。"""
+    """Analyse the output style of one generation."""
     fence_pos = raw.find("```")
-    # 代码之前有多少非代码文字（模型是否先说了废话）
+    # How much non-code text precedes the code (does the model preface with chatter?)
     preamble_len = fence_pos if fence_pos > 0 else raw.find("def ")
     return {
         "raw_chars": len(raw),
@@ -62,29 +62,29 @@ def analyse_style(raw: str, code: str) -> dict:
 
 def classify_failure(stage: str, exc: Exception | None) -> str:
     if stage == "gen":
-        return "生成失败"
+        return "generation failed"
     if stage == "exec":
         if isinstance(exc, SyntaxError):
-            return "语法错误"
+            return "syntax error"
         if isinstance(exc, IndentationError):
-            return "缩进错误"
-        return f"执行异常:{type(exc).__name__}"
+            return "indentation error"
+        return f"exec error:{type(exc).__name__}"
     if stage == "test":
         if isinstance(exc, AssertionError):
-            return "逻辑错误"
-        return f"测试异常:{type(exc).__name__}"
-    return "未知"
+            return "logic error"
+        return f"test error:{type(exc).__name__}"
+    return "unknown"
 
 
 def run_once(model, tokenizer, task, max_tokens, temperature):
-    """跑一次生成 + 执行 + 测试，返回详细记录。"""
+    """Run one generation + exec + tests, return a detailed record."""
     from mlx_lm import generate
     from mlx_lm.sample_utils import make_sampler
 
     rec = {"passed": False, "failure": None, "style": None}
 
-    # mlx_lm 的 generate 签名是 (model, tokenizer, prompt, verbose, **kwargs)，
-    # 没有 temp 参数；温度必须通过 sampler 传入。
+    # mlx_lm's generate signature is (model, tokenizer, prompt, verbose, **kwargs) with
+    # no temp argument; temperature must be passed via a sampler.
     gen_kwargs = {}
     if temperature > 0:
         gen_kwargs["sampler"] = make_sampler(temp=temperature)
@@ -95,8 +95,8 @@ def run_once(model, tokenizer, task, max_tokens, temperature):
             max_tokens=max_tokens, verbose=False, **gen_kwargs,
         )
     except Exception as exc:  # noqa: BLE001
-        # 带上具体异常类型，否则失败原因会被吞掉
-        rec["failure"] = f"生成失败({type(exc).__name__}: {str(exc)[:100]})"
+        # Include the exception type, otherwise the failure cause is swallowed
+        rec["failure"] = f"generation failed({type(exc).__name__}: {str(exc)[:100]})"
         return rec
 
     code = extract_code(raw)
@@ -123,18 +123,18 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
     ap.add_argument("--adapter", default=None)
-    ap.add_argument("--repeat", type=int, default=3, help="每题采样次数")
+    ap.add_argument("--repeat", type=int, default=3, help="samples per task")
     ap.add_argument("--max-tokens", type=int, default=400)
     ap.add_argument("--temperature", type=float, default=0.8)
-    ap.add_argument("--limit", type=int, default=0, help="只跑前 N 题（0=全部），用于快速验证")
+    ap.add_argument("--limit", type=int, default=0, help="run only the first N tasks (0 = all), for a quick check")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
     from mlx_lm import load
 
-    tag = "微调后" if args.adapter else "基座"
-    print(f"[{tag}] 模型={args.model}")
-    print(f"[{tag}] adapter={args.adapter or '（无）'}  采样={args.repeat}次  temp={args.temperature}")
+    tag = "fine-tuned" if args.adapter else "base"
+    print(f"[{tag}] model={args.model}")
+    print(f"[{tag}] adapter={args.adapter or '(none)'}  samples={args.repeat}  temp={args.temperature}")
     model, tokenizer = load(args.model, adapter_path=args.adapter)
 
     tasks = TASKS if args.limit <= 0 else TASKS[: args.limit]
@@ -143,28 +143,28 @@ def main() -> None:
     for i, task in enumerate(tasks, 1):
         records = []
         for r in range(args.repeat):
-            # 第一次用贪心（可复现），其余按温度采样，兼顾确定性与多样性
+            # First sample greedy (reproducible), the rest at temperature: determinism plus diversity
             temp = 0.0 if r == 0 else args.temperature
             records.append(run_once(model, tokenizer, task, args.max_tokens, temp))
         passed = sum(1 for x in records if x["passed"])
-        all_records.append({"name": task["name"], "category": CATEGORY.get(task["name"], "其他"),
+        all_records.append({"name": task["name"], "category": CATEGORY.get(task["name"], "other"),
                             "passed": passed, "repeat": args.repeat, "records": records})
         elapsed = time.time() - t0
         print(f"  ({i}/{len(tasks)}) {task['name']}: {passed}/{args.repeat}"
               f"   [{elapsed:.0f}s]", flush=True)
 
-    # ---------- 汇总 ----------
+    # ---------- summary ----------
     total_runs = sum(len(t["records"]) for t in all_records)
     total_pass = sum(t["passed"] for t in all_records)
 
     print(f"\n{'='*56}")
-    print(f"[{tag}] 总体通过率: {total_pass}/{total_runs} = {total_pass/total_runs:.1%}")
-    print(f"[{tag}] 严格通过率({args.repeat}次全对): "
+    print(f"[{tag}] overall pass rate: {total_pass}/{total_runs} = {total_pass/total_runs:.1%}")
+    print(f"[{tag}] strict pass rate (all {args.repeat} correct): "
           f"{sum(1 for t in all_records if t['passed']==t['repeat'])}/{len(all_records)}")
-    print(f"[{tag}] 从不通过: {sum(1 for t in all_records if t['passed']==0)}/{len(all_records)}")
+    print(f"[{tag}] never passed: {sum(1 for t in all_records if t['passed']==0)}/{len(all_records)}")
 
-    # 分题型
-    print(f"\n--- 分题型通过率 ({tag}) ---")
+    # by category
+    print(f"\n--- pass rate by category ({tag}) ---")
     cats: dict[str, list[int]] = {}
     for t in all_records:
         cats.setdefault(t["category"], []).append(t["passed"])
@@ -175,8 +175,8 @@ def main() -> None:
         cat_stat[c] = got / tot
         print(f"  {c:6s} {got}/{tot} = {got/tot:.1%}")
 
-    # 失败模式
-    print(f"\n--- 失败模式分布 ({tag}) ---")
+    # failure modes
+    print(f"\n--- failure mode distribution ({tag}) ---")
     fails: dict[str, int] = {}
     for t in all_records:
         for rec in t["records"]:
@@ -185,19 +185,19 @@ def main() -> None:
     for k, v in sorted(fails.items(), key=lambda x: -x[1]):
         print(f"  {k}: {v}")
 
-    # 输出风格
-    print(f"\n--- 输出风格 ({tag}) ---")
+    # output style
+    print(f"\n--- output style ({tag}) ---")
     styles = [r["style"] for t in all_records for r in t["records"]
               if r["style"]]
     if styles:
         n = len(styles)
-        print(f"  平均原始长度: {sum(s['raw_chars'] for s in styles)/n:.0f} 字符")
-        print(f"  平均代码长度: {sum(s['code_chars'] for s in styles)/n:.0f} 字符")
-        print(f"  平均代码行数: {sum(s['code_lines'] for s in styles)/n:.1f} 行")
-        print(f"  平均前言长度: {sum(s['preamble_chars'] for s in styles)/n:.0f} 字符  ← 越大越爱先说废话")
-        print(f"  使用代码围栏: {sum(1 for s in styles if s['has_fence'])/n:.0%}")
-        print(f"  带类型注解:   {sum(1 for s in styles if s['has_type_hint'])/n:.0%}")
-        print(f"  带 docstring: {sum(1 for s in styles if s['has_docstring'])/n:.0%}")
+        print(f"  avg raw length: {sum(s['raw_chars'] for s in styles)/n:.0f} chars")
+        print(f"  avg code length: {sum(s['code_chars'] for s in styles)/n:.0f} chars")
+        print(f"  avg code lines: {sum(s['code_lines'] for s in styles)/n:.1f}")
+        print(f"  avg preamble: {sum(s['preamble_chars'] for s in styles)/n:.0f} chars  <- higher means more chatter")
+        print(f"  uses code fences: {sum(1 for s in styles if s['has_fence'])/n:.0%}")
+        print(f"  has type hints:   {sum(1 for s in styles if s['has_type_hint'])/n:.0%}")
+        print(f"  has docstring:    {sum(1 for s in styles if s['has_docstring'])/n:.0%}")
 
     if args.out:
         with open(args.out, "w", encoding="utf-8") as fh:
@@ -208,7 +208,7 @@ def main() -> None:
                 "category": cat_stat, "failures": fails,
                 "tasks": all_records,
             }, fh, ensure_ascii=False, indent=2)
-        print(f"\n结果已写入 {args.out}")
+        print(f"\nresults written to {args.out}")
 
 
 if __name__ == "__main__":

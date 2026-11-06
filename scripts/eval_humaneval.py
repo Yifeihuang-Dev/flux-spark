@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""HumanEval 评估（164 题标准基准）。
+"""HumanEval evaluation (the standard 164-task benchmark).
 
-跟手写 31 题的关键区别：题量够大，能给出统计上可信的绝对水平，
-也便于对外比较。每题跑单元测试判定，不靠模型自评。
+Key difference from the 31 homemade tasks: enough volume for a statistically
+credible absolute level, and comparable with the outside world. Every task is
+judged by unit tests, never by the model's self-assessment.
 
-用法：
+Usage:
   python3 scripts/eval_humaneval.py --model <path> [--adapter <path>] \
       [--chat-template] [--repeat 3] [--limit 5]
 """
@@ -25,7 +26,8 @@ def load_tasks(path, limit=0):
 
 
 def make_prompt(task, instruct):
-    """instruct 模式给模型明确指令，否则按 HumanEval 标准做纯续写。"""
+    """In instruct mode the model gets an explicit instruction; otherwise it is
+    plain HumanEval continuation."""
     if not instruct:
         return task["prompt"]
     return (
@@ -40,10 +42,11 @@ def strip_fences(text):
 
 
 def clean_completion(prompt, completion):
-    """把模型输出整理成能拼在 prompt 之后且能编译的代码。
+    """Turn model output into code that can be appended to the prompt and compiled.
 
-    模型常会先说一段废话、或在代码后追加示例，都要剥掉。
-    做法：找到代码起点后，逐行截断取"能编译的最长前缀"。
+    The model often opens with chatter or appends examples after the code; both
+    must be stripped. Method: find the start of the code, then cut back to the
+    longest prefix that compiles.
     """
     comp = strip_fences(completion)
     lines = comp.split("\n")
@@ -53,7 +56,7 @@ def clean_completion(prompt, completion):
         s = ln.strip()
         if not s:
             continue
-        # 代码起点：def/import 关键字，或缩进行（函数体）
+        # Code start: a def/import keyword, or an indented line (function body)
         if s.startswith(("def ", "import ", "from ", "return", "if ", "for ", "while ")) \
                 or ln[:1] in (" ", "\t"):
             start = i
@@ -89,11 +92,11 @@ def main():
     ap.add_argument("--model", required=True)
     ap.add_argument("--adapter", default=None)
     ap.add_argument("--data", default="/Volumes/LLM/datasets/humaneval.jsonl")
-    ap.add_argument("--limit", type=int, default=0, help="只跑前 N 题（0=全部）")
+    ap.add_argument("--limit", type=int, default=0, help="run only the first N tasks (0 = all)")
     ap.add_argument("--max-tokens", type=int, default=400)
     ap.add_argument("--chat-template", action="store_true",
-                    help="SFT/instruct 模型必开（否则是裸续写）")
-    ap.add_argument("--repeat", type=int, default=1, help="每题采样几次")
+                    help="required for SFT/instruct models (otherwise it is raw continuation)")
+    ap.add_argument("--repeat", type=int, default=1, help="samples per task")
     ap.add_argument("--temperature", type=float, default=0.8)
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
@@ -134,8 +137,8 @@ def main():
                         "repeat": args.repeat})
         if i % 10 == 0 or i == len(tasks):
             done = sum(1 for r in results if r["passed"] > 0)
-            print(f"  ({i}/{len(tasks)}) 至今至少过一次: {done}  [{time.time()-t0:.0f}s]",
-                  flush=True)
+            print(f"  ({i}/{len(tasks)}) passed at least once so far: {done}  "
+                  f"[{time.time()-t0:.0f}s]", flush=True)
 
     total = len(results)
     avg = sum(r["passed"] for r in results) / (total * args.repeat)
@@ -144,12 +147,12 @@ def main():
     tag = args.model.rstrip("/").split("/")[-1] + ("+adapter" if args.adapter else "")
     print()
     print(f"===== HumanEval [{tag}] =====")
-    print(f"  题数 {total}   采样 {args.repeat} 次/题   "
-          f"模板={'开' if args.chat_template else '裸续写'}")
-    print(f"  平均通过率      {avg:.1%}")
-    print(f"  best-of-{args.repeat}    "
+    print(f"  tasks {total}   samples {args.repeat}/task   "
+          f"template={'on' if args.chat_template else 'raw continuation'}")
+    print(f"  average pass rate   {avg:.1%}")
+    print(f"  best-of-{args.repeat}      "
           f"{any_pass}/{total} = {any_pass / total:.1%}")
-    print(f"  用时 {time.time() - t0:.0f}s")
+    print(f"  elapsed {time.time() - t0:.0f}s")
 
     if args.out:
         json.dump({"model": args.model, "adapter": args.adapter,

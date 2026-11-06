@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""生成「空值处理」专用测试集。
+"""Build a null-handling specific test set.
 
-背景：主测试集里空值类 bug 只有 4 个（占 6%），导致 v5（空值增强版）
-的效果根本测不出来——那 4 个全对也只影响 6 个百分点。
+Background: the main test set contains only 4 null-type bugs (6%), so the effect of
+v5 (null-augmented) cannot be measured — getting all 4 right moves the total by 6 points.
 
-这里用 20 个**全新的、带空值守卫的**种子函数造一个只测空值的测试集。
-这些函数从未出现在任何训练集中（SEEDS 里没有它们），所以测的是泛化能力。
+This script builds a null-only test set from 20 **brand-new, null-guarded** seed
+functions that never appear in any training set — so it measures generalization.
 
-用法：
+Usage:
   python3 scripts/make_null_test.py --out /Volumes/LLM/datasets/null_test/test.jsonl
 """
 import argparse
@@ -24,7 +24,7 @@ PROMPT_TMPL = '''审查以下 Python 函数，找出其中的问题。
 
 NO_ISSUE = "无问题"
 
-# 20 个带空值守卫的新种子。全部是全新函数名，不出现在任何训练集里。
+# 20 new null-guarded seeds. All-new function names, absent from every training set.
 SEEDS = {
     "get_head": '''def get_head(items):
     if not items:
@@ -158,8 +158,11 @@ SEEDS = {
     return out''',
 }
 
-# (种子名, 要替换的原文, 替换成, 类型, 描述)
-# 变异按种子逐个指定，避免全局字符串匹配误伤其他函数。
+# (seed name, original text, replacement, type, description)
+# Mutations are declared per seed so global string matching cannot damage other functions.
+# NOTE: the type labels and descriptions stay in Chinese — they are training-data
+# content matched against a Chinese-heavy SFT base; translating them would require
+# regenerating the data and retraining.
 MUTATIONS = [
     ("get_head", "    if not items:\n        return None\n", "",
      "缺少空列表守卫，items 为空时访问 items[0] 会抛 IndexError"),

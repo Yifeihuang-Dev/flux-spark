@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""跨模型横评：同一批题、同一套提示词、同一采样预算。
+"""Cross-model benchmark: same tasks, same prompts, same sampling budget.
 
-回答的问题：在「2B / 4bit / 本地 / 离线」这个赛道里，Flux Spark 的流水线
-    到底贡献了多少，和各档位模型自身的差距相比，谁大。
+The question it answers: in the "2B / 4-bit / local / offline" niche, how much
+does the Flux Spark pipeline actually contribute — and how does that compare to
+the gap between model tiers?
 
-三个条件，逐题记录，可断点续跑：
-    s1  单次生成（贪婪）
-    b3  best-of-3（第2、3 次带温度），任一通过即算过
-    b3r b3 仍失败的题，再走一次「对照需求反思 → 重写」
+Three conditions, per-task records, resumable:
+    s1   single greedy generation
+    b3   best-of-3 (samples 2 and 3 at temperature); any pass counts
+    b3r  for b3 failures, one round of "reflect against the requirement -> rewrite"
 
-注意：b3/b3r 都建立在「每题最多 3 次采样」上。给 A 模型 3 次就得给所有
-模型 3 次，否则比的是算力不是能力。
+Note: b3/b3r are built on "at most 3 samples per task". If model A gets 3
+samples, every model must get 3 — otherwise you measure compute, not capability.
 
-用法：
+Usage:
   python3 scripts/bench_matrix.py --model /path --out /tmp/bench_x.jsonl --limit 10
 """
 import argparse
@@ -30,24 +31,26 @@ sys.path.insert(0, os.path.dirname(HERE))
 
 from eval_humaneval import load_tasks, make_prompt, clean_completion, run_test
 
-# 反思/重写模板直接取自 CLI，保证与 Flux Spark 用的是同一套话术
+# Reflection/rewrite templates come straight from the CLI so that every model
+# is judged with exactly the wording Flux Spark uses.
 from fluxspark import REFLECT_TMPL, FIX_TMPL
 
 HEPLUS_CACHE = "/tmp/heplus.json.gz"
 
 
 def make_judge(use_plus):
-    """返回 judge(task, full_code) -> (主判定, base判定)。
+    """Returns judge(task, full_code) -> (primary verdict, base verdict).
 
-    use_plus=False：只用 HumanEval 原生测试（历史口径）。
-    use_plus=True ：用 HumanEval+ 增强测试当裁判（约 80 倍测试量），
-                    同时记录 base 判定以便对比假阳性率。
+    use_plus=False: judge with HumanEval's own tests (historical setting).
+    use_plus=True : judge with HumanEval+ augmented tests (~80x the test volume)
+                    and also record the base verdict so false positives can be
+                    measured on the same code.
     """
     if not use_plus:
         return (lambda task, code: (run_test(task, code), None))
 
     import gzip
-    from evalplus_local import eq  # noqa: F401  (worker 内部使用)
+    from evalplus_local import eq  # noqa: F401  (used inside the worker)
     with gzip.open(HEPLUS_CACHE, "rt", encoding="utf-8") as fh:
         probs = json.load(fh)
     here = os.path.dirname(os.path.abspath(__file__))
@@ -94,15 +97,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
     ap.add_argument("--data", default="/Volumes/LLM/datasets/humaneval.jsonl")
-    ap.add_argument("--out", required=True, help="JSONL，逐题追加，可续跑")
+    ap.add_argument("--out", required=True, help="JSONL, appended per task, resumable")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--offset", type=int, default=0)
     ap.add_argument("--max-tokens", type=int, default=400)
     ap.add_argument("--temperature", type=float, default=0.8)
-    ap.add_argument("--no-reflect", action="store_true", help="只跑 s1/b3")
+    ap.add_argument("--no-reflect", action="store_true", help="run s1/b3 only")
     ap.add_argument("--plus", action="store_true",
-                    help="用 HumanEval+ 增强测试当裁判（约 80 倍测试量），"
-                         "同时记录 base 判定以便测假阳性率")
+                    help="judge with HumanEval+ augmented tests (~80x the test volume) "
+                         "and also record the base verdict to measure false positives")
     args = ap.parse_args()
 
     from mlx_lm import load, generate
@@ -119,8 +122,8 @@ def main():
     tasks = load_tasks(args.data, args.limit)
     tasks = tasks[args.offset:]
     todo = [t for t in tasks if t["task_id"] not in done]
-    print(f"模型 {os.path.basename(args.model.rstrip('/'))} | "
-          f"待跑 {len(todo)}/{len(tasks)} 题", flush=True)
+    print(f"model {os.path.basename(args.model.rstrip('/'))} | "
+          f"to run {len(todo)}/{len(tasks)} tasks", flush=True)
 
     sampler = make_sampler(temp=args.temperature)
     judge = make_judge(args.plus)
@@ -136,11 +139,11 @@ def main():
                            **({"sampler": s} if s else {}))
             return base + clean_completion(base, raw)
 
-        # --- s1：单次贪婪 ---
+        # --- s1: single greedy ---
         code1 = gen()
         s1, s1_base = judge(task, code1)
 
-        # --- b3：最多再采两次 ---
+        # --- b3: at most two more samples ---
         b3, b3_base, best_code = s1, s1_base, code1
         if not s1:
             for _ in range(2):
@@ -151,7 +154,7 @@ def main():
                     break
                 best_code = c
 
-        # --- b3r：仍失败则反思重写 ---
+        # --- b3r: reflect + rewrite if still failing ---
         b3r, b3r_base, fixed_code = b3, b3_base, None
         reflected = False
         if (not b3) and (not args.no_reflect):
@@ -187,8 +190,8 @@ def main():
             tot = len(rows)
             rates = " ".join(
                 f"{k}={100*sum(1 for r in rows if r[k])/tot:.1f}%" for k in ("s1", "b3", "b3r"))
-            print(f"  ({n}/{len(todo)}) {rates}  已用 {el/60:.1f} 分  "
-                  f"剩余约 {eta/60:.1f} 分", flush=True)
+            print(f"  ({n}/{len(todo)}) {rates}  elapsed {el/60:.1f} min  "
+                  f"eta {eta/60:.1f} min", flush=True)
 
 
 if __name__ == "__main__":

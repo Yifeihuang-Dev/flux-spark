@@ -2,14 +2,14 @@ __pycache__/
 *.py[cod]
 .DS_Store
 
-# 训练产物：体积大，不入库
+# Training artifacts: large, not committed
 adapters/
 checkpoints/
 *.safetensors
 *.npz
 *.mlx
 
-# 日志与中间结果
+# Logs and intermediate results
 logs/
 *.log
 data_local/

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""构造审查器微调数据。
+"""Build reviewer fine-tuning data.
 
-核心思路：从「干净函数」出发，用受控的字符串替换注入已知 bug。
-因为 bug 是我们自己塞进去的，标签 100% 正确，不需要任何人工标注。
+Idea: start from clean functions and inject known bugs via controlled string
+replacement. Because the bugs are ours, labels are 100% correct — no annotation.
 
-产出 mlx-lm 格式：
-  user      -> 让模型审查代码
-  assistant -> 问题列表（每行「类型: 描述」），或无问题
+Produces mlx-lm format:
+  user      -> asks the model to review the code
+  assistant -> issue list (one "type: description" per line), or "no issue"
 """
 
 import argparse
@@ -14,8 +14,8 @@ import json
 import os
 import random
 
-# ---------------------------------------------------------------- 种子函数
-# 干净、短小、常见的 Python 函数，作为注入 bug 的母体
+# ---------------------------------------------------------------- seed functions
+# Clean, short, common Python functions — the hosts for injected bugs
 SEEDS = {
     "sum_list": '''def sum_list(nums):
     total = 0
@@ -516,9 +516,10 @@ SEEDS = {
             c += 1
     return c''',
 
-    # ---- 带空值守卫的种子 ----
-    # 原先 71 个种子总共只有 7 处守卫，导致「空值处理」类 bug 只占 6%。
-    # 空值 bug 只能靠删掉已有守卫来制造，所以必须补带守卫的种子。
+    # ---- seeds with null guards ----
+    # The original 71 seeds had only 7 guards in total, leaving null-type bugs at 6%.
+    # Null bugs can only be made by deleting an existing guard, so guarded seeds had
+    # to be added.
     "first_element": '''def first_element(nums):
     if not nums:
         return None
@@ -612,11 +613,13 @@ SEEDS = {
     return total''',
 }
 
-# ---------------------------------------------------------------- 变异算子
-# (查找串, 替换串, 问题类型, 问题描述)
-# 用精确字符串匹配，避免误替换到不该改的地方
+# ---------------------------------------------------------------- mutation operators
+# (find string, replace string, issue type, issue description)
+# Exact string matching, so nothing outside the intended site is touched.
+# NOTE: types and descriptions stay in Chinese — they are training-data content for a
+# Chinese-heavy SFT base; translating them means regenerating data and retraining.
 MUTATIONS = [
-    # ---- 边界 / 越界 ----
+    # ---- boundary / off-by-one ----
     ("range(len(arr))", "range(len(arr) - 1)", "边界条件", "循环少执行一次，最后一个元素被漏掉"),
     ("for x in nums:", "for x in nums[:-1]:", "边界条件", "循环排除了最后一个元素"),
     ("range(1, n + 1)", "range(1, n)", "边界条件", "循环少执行一次，累乘会漏掉 n"),
@@ -630,7 +633,7 @@ MUTATIONS = [
     ("for i in range(exp):", "for i in range(exp - 1):", "边界条件", "循环少执行一次，结果少乘一次底数"),
     ("range(a, b + 1)", "range(a, b)", "边界条件", "区间右端点少 1，右边界值被漏掉"),
 
-    # ---- 删守卫 / 空值 ----
+    # ---- guard deletion / null handling ----
     ("if not nums:\n        return None\n", "", "空值处理", "缺少空输入守卫，nums 为空时访问 nums[0] 会抛 IndexError"),
     ("if not nums:\n        return 0\n", "", "空值处理", "缺少空输入守卫，空列表会导致除零错误"),
     ("if not strs:\n        return \"\"\n", "", "空值处理", "缺少空输入守卫，空列表会抛 IndexError"),
@@ -643,7 +646,7 @@ MUTATIONS = [
     ("if not stack or stack.pop() != pairs[ch]:", "if stack.pop() != pairs[ch]:",
      "空值处理", "缺少空栈判断，右括号多余时会抛异常"),
 
-    # ---- 逻辑 / 运算符 ----
+    # ---- logic / operators ----
     ("total += x", "total -= x", "逻辑错误", "累加写成了累减，结果符号相反"),
     ("c += 1", "c += 2", "逻辑错误", "计数步长写成 2，结果是实际的两倍"),
     ("if x > m:", "if x >= m:", "逻辑错误", "比较用错，相等时也更新，逻辑冗余"),

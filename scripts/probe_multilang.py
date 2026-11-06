@@ -1,18 +1,20 @@
-"""多语言探针：回答「这个模型是不是只会 Python」。
+"""Multilingual probe: answers "is this model Python-only?"
 
-结论写在 README/REPORT 里，这里是可复现的量具。
+The conclusion lives in README/REPORT; this is the reproducible instrument.
 
-用法：
-    python3 scripts/probe_multilang.py                # 全跑一遍语法验证
-    python3 scripts/probe_multilang.py --lang sql     # 只跑 SQL（带语义断言）
+Usage:
+    python3 scripts/probe_multilang.py                # syntax-check every language
+    python3 scripts/probe_multilang.py --lang sql     # SQL only (with semantic assertions)
     python3 scripts/probe_multilang.py --lang js
 
-它同时演示了 fluxspark  generalization 到任意语言所需的**三个东西**：
-  1. start_markers : 代码从哪儿开始（用来砍掉模型吐在前面的思维泄漏）
-  2. check_cmd     : 用本机工具做语法检查（代替 Python 的 ast.parse）
-  3. test_cmd      : 跑测试（有这个才能判断「逻辑对不对」，而不只是「能不能解析」）
+It also demonstrates the **three things** needed to generalize fluxspark to any
+language:
+  1. start_markers : where the code begins (to trim thinking leaked before it)
+  2. check_cmd     : syntax check with a local tool (instead of Python's ast.parse)
+  3. test_cmd      : run tests (only this can judge "is the logic right", not just "does it parse")
 
-⚠️ 只做语法检查会严重高估模型能力：JS 那次语法全过，但去重函数返回空数组。
+WARNING: syntax checking alone badly overestimates capability — the JS run passed
+syntax every time while the dedup function returned an empty array.
 """
 import argparse
 import os
@@ -34,12 +36,16 @@ Requirement:
 {req}
 """
 
-# 每种语言：起始标记（找真正的代码开头）+ 本机可用的语法检查器
+# Per language: start markers (find the real code start) + a local syntax checker.
+# NOTE: the "req" strings are kept in Chinese on purpose — the reported probe
+# results (e.g. SQL 3/3 semantically correct) were produced with these exact
+# Chinese requirements against a Chinese-heavy SFT base. Translating them would
+# be an untested behavioral change.
 LANGS = {
     "js": {
         "display": "JavaScript", "suffix": ".js",
         "start": (r"^\s*(function|const|let|var|class|export|async)\b",
-                  r"^\s*'.use strict'"),
+                  r"^\s*'use strict'"),
         "req": "写一个函数，去掉数组里的重复元素并保持原顺序",
         "check": lambda p: ["node", "--check", p],
     },
@@ -74,11 +80,11 @@ LANGS = {
 
 
 def strip_think(raw, spec):
-    """砍掉模型吐在代码前面的自言自语。
+    """Trim the self-talk the model emits before the code.
 
-    两条线索：
-      a) 有 </think> 闭合标签 → 从它之后开始
-      b) 否则找第一个「像代码开头」的行（start_markers）
+    Two cues:
+      a) a closing </think> tag -> start after it
+      b) otherwise find the first line that looks like a code start (start_markers)
     """
     m = re.search(r"```(?:[a-zA-Z+#]*)\s*\n(.*?)```", raw, re.S)
     text = m.group(1) if m else fx.strip_fences(raw)
@@ -105,7 +111,7 @@ def check_syntax(spec, code):
             return True, ""
         return False, (r.stderr or r.stdout).strip().splitlines()[-1][:120]
     except FileNotFoundError:
-        return None, "本机没有该语言的检查工具"
+        return None, "this language's checker is not installed locally"
     except Exception as e:
         return False, str(e)[:120]
     finally:
@@ -113,13 +119,13 @@ def check_syntax(spec, code):
 
 
 def probe_sql_semantics(model, tok, rounds=3):
-    """SQL 专属：语法过了还没完，用真数据查一遍看答案对不对。"""
+    """SQL only: syntax passing is not enough — run it on real data and check the answer."""
     schema = """
     CREATE TABLE employees (name TEXT, department TEXT, salary INT);
     INSERT INTO employees VALUES ('Alice','Eng',100), ('Bob','Eng',120),
                                  ('Carol','Sales',90), ('Dave','Sales',150);
     """
-    expected = {"Bob": ("Eng", 120), "Dave": ("Sales", 150)}   # 姓名→(部门,工资)
+    expected = {"Bob": ("Eng", 120), "Dave": ("Sales", 150)}   # name -> (department, salary)
     hit = 0
     for i in range(rounds):
         raw = fx.generate(model, tok,
@@ -131,20 +137,20 @@ def probe_sql_semantics(model, tok, rounds=3):
             con.executescript(schema)
             got = {r[0]: (r[1], r[2]) for r in con.execute(sql)}
             ok = got == expected
-            detail = "" if ok else "得到 %s" % (got,)
+            detail = "" if ok else "got %s" % (got,)
         except Exception as e:
             ok, detail = False, str(e)[:100]
         con.close()
         hit += ok
-        print("  第%d次：%s %s" % (i + 1, "语义正确" if ok else "不对", detail))
+        print("  round %d: %s %s" % (i + 1, "semantically correct" if ok else "wrong", detail))
         print("    " + " ".join(sql.split())[:150])
-    print("  → SQL 语义正确率 %d/%d" % (hit, rounds))
+    print("  -> SQL semantic accuracy %d/%d" % (hit, rounds))
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--lang", default=None,
-                    help="只跑某一种：%s" % ", ".join(LANGS))
+                    help="run only one of: %s" % ", ".join(LANGS))
     ap.add_argument("--rounds", type=int, default=1)
     args = ap.parse_args()
 
@@ -164,14 +170,15 @@ def main():
                               max_tokens=900)
             code = strip_think(raw, spec)
             ok, msg = check_syntax(spec, code)
-            print("  第%d次：%s %s" % (
-                i + 1, {True: "语法通过", False: "语法失败",
-                        None: "未验证"}[ok], msg))
+            print("  round %d: %s %s" % (
+                i + 1, {True: "syntax OK", False: "syntax FAIL",
+                        None: "not verified"}[ok], msg))
             if args.rounds == 1 and code:
                 for line in code.splitlines()[:8]:
                     print("    | " + line)
     print("=" * 62)
-    print("注意：语法通过 ≠ 逻辑正确。要判断逻辑，必须给测试（这正是反思环的前提）。")
+    print("Note: passing syntax != correct logic. Judging logic requires tests "
+          "(which is exactly why the reflection loop exists).")
 
 
 if __name__ == "__main__":

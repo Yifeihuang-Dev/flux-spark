@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""闭环验证：执行器生成 → 测试判定 → 审查器审查。
+"""Closed-loop verification: executor generates -> tests judge -> reviewer reviews.
 
-这是整套架构第一次端到端实战。要回答的不是「审查器在合成数据上有多准」，
-而是一个更硬的问题：
+This was the architecture's first end-to-end run. The question is not "how
+accurate is the reviewer on synthetic data" but a harder one:
 
-    **面对真实生成出来的代码，审查器报警的那些题，是不是真的更容易错？**
+    **On real generated code, are the tasks the reviewer flags actually more
+    likely to be wrong?**
 
-如果报警组的失败率显著高于不报警组，说明审查器提供了**独立于测试**的增量
-信号——架构里的「验证层」才算站得住。反之，如果两组失败率一样，那审查器
-只是在抛硬币，再多召回率也没意义。
+If the flagged group fails significantly more often than the unflagged group,
+the reviewer provides a signal that is independent of the tests — only then
+does the architecture's "verification layer" stand. If both groups fail at the
+same rate, the reviewer is flipping coins, and no amount of recall helps.
 
-用法：
-  python3 scripts/run_pipeline.py --model <基座> --reviewer <审查器adapter> --out <json>
+Usage:
+  python3 scripts/run_pipeline.py --model <base> --reviewer <reviewer adapter> --out <json>
 """
 import argparse
 import gc
@@ -24,6 +26,11 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from eval_humaneval import load_tasks, make_prompt, clean_completion, run_test
 
+# NOTE: all prompt templates below, plus NO_ISSUE and CATS, are kept in Chinese
+# on purpose. They are part of the measured configuration behind the numbers in
+# REPORT.md (a Chinese-heavy SFT base produced these exact outputs); translating
+# them would be an untested behavioral change and break reproducibility. The
+# detection keywords must match the language the reviewer actually answers in.
 PROMPT_TMPL = '''审查以下 Python 函数，找出其中的问题。
 
 ```python
@@ -46,9 +53,9 @@ FIX_TMPL = '''下面这个 Python 函数没有通过测试。审查意见指出�
 {code}
 ```'''
 
-# 对照组：完全一样的重写请求，但不给任何审查意见。
-# 用来排除「单纯重写一次就有效」这个混淆项——只有 A 组明显好于 B 组，
-# 才能说审查意见真的起了作用，而不是「再试一次碰巧对了」。
+# Control arm: the exact same rewrite request, but with no review advice at all.
+# It rules out the confounder "a second attempt just works" — only if arm A is
+# clearly better than arm B can we say the advice mattered.
 FIX_TMPL_BLIND = '''下面这个 Python 函数没有通过测试。
 
 请重写这个函数，修正其中的问题。
@@ -58,9 +65,10 @@ FIX_TMPL_BLIND = '''下面这个 Python 函数没有通过测试。
 {code}
 ```'''
 
-# 反思环节（新增的一环）：不猜「哪里像有 bug」，而是先说清这段代码实际在做什么，
-# 再对照任务要求找不满足的地方。定位的是「思路偏了」，而不是「代码写错了」——
-# 后者才是指望靠报错或审查意见能修好的那类问题。
+# The reflection stage: instead of guessing "where does a bug look like", state
+# what the code actually does, then compare it against the task requirement.
+# It targets "the approach is wrong", not "the code is buggy" — the latter is
+# the only kind that error messages or review advice can fix.
 REFLECT_TMPL = '''下面是一个编程任务的要求，以及一份没能通过测试的解答。
 
 【任务要求】
@@ -95,7 +103,7 @@ FIX_REFLECT_TMPL = '''下面这个 Python 函数没有通过测试。
 
 
 def wrap(tokenizer, prompt):
-    """套 chat template。不套的话模型会退化成裸续写。"""
+    """Apply the chat template. Without it the model degenerates to raw continuation."""
     try:
         return tokenizer.apply_chat_template(
             [{"role": "user", "content": prompt}], tokenize=False,
@@ -107,7 +115,7 @@ def wrap(tokenizer, prompt):
 
 
 def reported_any(text):
-    """宽松判断：模型到底有没有报出问题（不管用词）。"""
+    """Loose check: did the model report any issue at all (regardless of wording)?"""
     if NO_ISSUE in text:
         return False
     if any(c in text for c in CATS):
@@ -116,7 +124,8 @@ def reported_any(text):
 
 
 def try_fix(model, tok, spec, task_prompt, prompt_text, max_tokens):
-    """按给定提示重写一次并测。三组修复共用它，保证除提示外过程完全一致。"""
+    """Rewrite once with the given prompt and test it. Shared by all three arms
+    so everything except the prompt is identical."""
     from mlx_lm import generate
     raw = generate(model, tok, prompt=wrap(tok, prompt_text),
                    max_tokens=max_tokens, verbose=False)
@@ -124,7 +133,8 @@ def try_fix(model, tok, spec, task_prompt, prompt_text, max_tokens):
 
 
 def save_partial(path, results, summary=None):
-    """中途落盘。上次跑到 160/164 被中断、结果全丢，所以每阶段结束就存一次。"""
+    """Checkpoint mid-run. An earlier run died at 160/164 and lost everything,
+    so results are now written after every stage."""
     if not path:
         return
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -135,29 +145,31 @@ def save_partial(path, results, summary=None):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", required=True, help="基座模型（执行器）")
-    ap.add_argument("--reviewer", default=None, help="审查器 adapter 路径")
+    ap.add_argument("--model", required=True, help="base model (the executor)")
+    ap.add_argument("--reviewer", default=None, help="reviewer adapter path")
     ap.add_argument("--data", default="/Volumes/LLM/datasets/humaneval.jsonl")
-    ap.add_argument("--limit", type=int, default=0, help="只跑前 N 题（0=全部）")
+    ap.add_argument("--limit", type=int, default=0, help="run only the first N tasks (0 = all)")
     ap.add_argument("--max-tokens", type=int, default=400)
     ap.add_argument("--review-tokens", type=int, default=220)
     ap.add_argument("--reflect-tokens", type=int, default=320)
     ap.add_argument("--repeat", type=int, default=1,
-                    help="每题采样几次（best-of-N）。叠加模式要用它先把能蒙对的题挑走")
+                    help="samples per task (best-of-N). The stacked mode uses this "
+                         "to skim off tasks a lucky sample would pass")
     ap.add_argument("--temperature", type=float, default=0.8,
-                    help="第 2 次及以后采样的温度（与 eval_humaneval 默认一致，保证基线可比）")
+                    help="temperature for sample 2 onwards (matches eval_humaneval's "
+                         "default so baselines stay comparable)")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
     from mlx_lm import load, generate
 
     tasks = load_tasks(args.data, args.limit)
-    print(f"共 {len(tasks)} 题")
+    print(f"{len(tasks)} tasks")
 
-    # ---- 阶段 1：执行器生成 + 测试判定（用基座，不能挂审查器 adapter）----
-    print("\n=== 阶段 1：生成代码，用测试判定对错 ===")
+    # ---- stage 1: executor generates + tests judge (base model, no adapter) ----
+    print("\n=== stage 1: generate code, judge with tests ===")
     model, tokenizer = load(args.model)
-    # 第 2 次及以后改用带温度采样，保证候选之间真的不一样
+    # From sample 2 onward use temperature so candidates genuinely differ
     sampler = None
     if args.repeat > 1 and args.temperature > 0:
         from mlx_lm.sample_utils import make_sampler
@@ -169,38 +181,41 @@ def main():
         gen_prompt = wrap(tokenizer, make_prompt(task, True))
         passed = False
         first_code = None
-        # best-of-N：采样 N 次，任一次通过即通过。
-        # 刻意不早停——否则实际采样次数变少，就没法和 eval_humaneval 的 best-of-3 对齐了。
+        # best-of-N: sample N times, any pass counts.
+        # Deliberately no early stop — otherwise the effective sample count drops
+        # and the numbers stop aligning with eval_humaneval's best-of-3.
         for k in range(args.repeat):
             kw = {"sampler": sampler} if (k > 0 and sampler is not None) else {}
             raw = generate(model, tokenizer, prompt=gen_prompt,
                            max_tokens=args.max_tokens, verbose=False, **kw)
             full = task["prompt"] + clean_completion(task["prompt"], raw)
             if first_code is None:
-                first_code = full      # 反思环节分析这一份（首个候选）
+                first_code = full      # the reflection stage analyses this one (first candidate)
             if run_test(task, full):
                 passed = True
         results.append({
             "task_id": task["task_id"],
             "passed": passed,
-            "code": first_code,        # 修复阶段要用来裁剪生成结果
+            "code": first_code,        # the repair stage trims the generation from this
             "task_prompt": task["prompt"],
         })
         if i % 10 == 0 or i == len(tasks):
             n = sum(1 for r in results if r["passed"])
-            print(f"  ({i}/{len(tasks)}) 至少过一次 {n}  [{time.time()-t0:.0f}s]", flush=True)
+            print(f"  ({i}/{len(tasks)}) passed at least once: {n}  "
+                  f"[{time.time()-t0:.0f}s]", flush=True)
 
-    # 释放基座，再挂 adapter——审查器和执行器不能同时生效
+    # Free the base before attaching the adapter — reviewer and executor cannot
+    # be active at the same time
     del model, tokenizer
     gc.collect()
 
     n_pass = sum(1 for r in results if r["passed"])
-    print(f"生成完成：通过 {n_pass}/{len(results)} = {n_pass/len(results):.1%}")
+    print(f"generation done: pass {n_pass}/{len(results)} = {n_pass/len(results):.1%}")
     save_partial(args.out, results, {"stage": "after_generate",
                                      "pass_rate": n_pass / len(results) if results else 0})
 
-    # ---- 阶段 2：审查器审查每一份真实生成的代码 ----
-    print("\n=== 阶段 2：审查器审查真实生成的代码 ===")
+    # ---- stage 2: the reviewer reviews every piece of real generated code ----
+    print("\n=== stage 2: reviewer reviews real generated code ===")
     rmodel, rtok = load(args.model, adapter_path=args.reviewer)
     t1 = time.time()
     for i, r in enumerate(results, 1):
@@ -219,10 +234,11 @@ def main():
     test_by_id = {t["task_id"]: t["test"] for t in tasks}
     entry_by_id = {t["task_id"]: t["entry_point"] for t in tasks}
 
-    # ---- 阶段 2.5：反思环节（新增的一环）----
-    # 与审查器不同：它不猜「哪里像有 bug」，而是先说清「这段代码实际在做什么」，
-    # 再对照任务要求找出不满足的地方。定位的是「思路偏了」，而非「代码写错了」。
-    print("\n=== 阶段 2.5：对失败题反思（总结思路 / 对照要求 / 给出建议）===")
+    # ---- stage 2.5: reflection (newly added) ----
+    # Unlike the reviewer, it does not guess "where a bug looks like"; it states
+    # what the code does and compares that against the requirement. It targets
+    # "wrong approach", not "buggy code".
+    print("\n=== stage 2.5: reflect on failures (summarize / compare / advise) ===")
     t15 = time.time()
     n_reflect = 0
     for i, r in enumerate(results, 1):
@@ -235,13 +251,14 @@ def main():
             max_tokens=args.reflect_tokens, verbose=False).strip()
         if i % 10 == 0 or i == len(results):
             print(f"  ({i}/{len(results)})  [{time.time()-t15:.0f}s]", flush=True)
-    print(f"  反思完成：{n_reflect} 道失败题")
+    print(f"  reflection done: {n_reflect} failing tasks")
     save_partial(args.out, results, {"stage": "after_reflect"})
 
-    # ---- 阶段 3：三组对照修复 ----
-    # 范围扩大到「所有失败题」，不再限于审查器报警的那些：
-    # 审查器已被证伪，拿它当门禁只会把样本砍到 9 题，失去统计意义。
-    print("\n=== 阶段 3：三组对照修复（盲重写 / 审查意见 / 反思建议）===")
+    # ---- stage 3: three controlled repair arms ----
+    # Scope widened to ALL failures, no longer just the flagged ones: with the
+    # reviewer falsified, gating on it would shrink the sample to 9 and destroy
+    # statistical meaning.
+    print("\n=== stage 3: three repair arms (blind / review / reflection) ===")
     t2 = time.time()
     repaired = blind_fixed = reflect_fixed = attempted = 0
     for i, r in enumerate(results, 1):
@@ -253,13 +270,13 @@ def main():
                 "test": test_by_id[r["task_id"]],
                 "entry_point": entry_by_id[r["task_id"]]}
 
-        # A 组：不给任何信息，纯粹重写一次（基线）
+        # Arm A: no information at all, a pure rewrite (baseline)
         r["blind_pass"] = try_fix(fmodel, ftok, spec, r["task_prompt"],
                                   FIX_TMPL_BLIND.format(code=r["code"]), args.max_tokens)
         if r["blind_pass"]:
             blind_fixed += 1
 
-        # B 组：带审查器意见（仅对审查器报了警的题，其余保持 None）
+        # Arm B: with reviewer advice (only for flagged tasks; the rest stay None)
         if r.get("flagged") and r.get("review", "").strip():
             r["fixed_pass"] = try_fix(fmodel, ftok, spec, r["task_prompt"],
                                       FIX_TMPL.format(code=r["code"], review=r["review"]),
@@ -267,7 +284,7 @@ def main():
             if r["fixed_pass"]:
                 repaired += 1
 
-        # C 组：带反思建议（新增的这一环）
+        # Arm C: with reflection advice (the newly added stage)
         if r["reflection"]:
             r["reflect_pass"] = try_fix(fmodel, ftok, spec, r["task_prompt"],
                                         FIX_REFLECT_TMPL.format(
@@ -278,10 +295,10 @@ def main():
                 reflect_fixed += 1
 
         if i % 10 == 0 or i == len(results):
-            print(f"  ({i}/{len(results)}) 盲重写{blind_fixed} / 审查意见{repaired} / "
-                  f"反思建议{reflect_fixed}  [{time.time()-t2:.0f}s]", flush=True)
+            print(f"  ({i}/{len(results)}) blind {blind_fixed} / review {repaired} / "
+                  f"reflection {reflect_fixed}  [{time.time()-t2:.0f}s]", flush=True)
 
-    # ---- 统计：报警到底有没有信息量 ----
+    # ---- statistics: does flagging carry information at all? ----
     flagged = [r for r in results if r["flagged"]]
     quiet = [r for r in results if not r["flagged"]]
     n_flag, n_quiet = len(flagged), len(quiet)
@@ -294,36 +311,36 @@ def main():
     p_quiet = fail_quiet / n_quiet if n_quiet else 0.0
 
     print(f"\n{'='*64}")
-    print(f"生成通过率              {n_pass}/{len(results)} = {n_pass/len(results):.1%}")
-    print(f"审查器报警的题目        {n_flag}/{len(results)} = {n_flag/len(results):.1%}")
+    print(f"generation pass rate         {n_pass}/{len(results)} = {n_pass/len(results):.1%}")
+    print(f"tasks flagged by reviewer    {n_flag}/{len(results)} = {n_flag/len(results):.1%}")
     print("-" * 64)
-    print(f"报警组里真失败的比例    {fail_flag}/{n_flag} = {p_flag:.1%}")
-    print(f"未报警组里真失败的比例  {fail_quiet}/{n_quiet} = {p_quiet:.1%}")
-    print(f"（整体失败率基线        {base_fail:.1%}）")
+    print(f"true failure in flagged      {fail_flag}/{n_flag} = {p_flag:.1%}")
+    print(f"true failure in unflagged    {fail_quiet}/{n_quiet} = {p_quiet:.1%}")
+    print(f"(overall failure baseline    {base_fail:.1%})")
     print("-" * 64)
     if n_quiet and p_quiet > 0:
-        print(f"提升度 lift             {p_flag / p_quiet:.2f}x"
-              f"   报警组失败概率 ÷ 未报警组")
+        print(f"lift                         {p_flag / p_quiet:.2f}x"
+              f"   (failure odds: flagged / unflagged)")
     elif n_quiet:
-        print("提升度 lift             n/a（未报警组里没有一题失败）")
+        print("lift                         n/a (no failure in the unflagged group)")
     else:
-        print("提升度 lift             n/a（没有未报警的题）")
+        print("lift                         n/a (nothing left unflagged)")
     n_reviewed = sum(1 for r in results
                      if not r["passed"] and r.get("flagged") and r.get("review", "").strip())
-    print(f"\n--- 阶段 3：三组对照修复（失败题共 {attempted} 道）---")
+    print(f"\n--- stage 3: three repair arms ({attempted} failing tasks) ---")
     if attempted:
-        print(f"A 组 盲重写（基线）        {blind_fixed:>2}/{attempted} = {blind_fixed/attempted:.1%}")
+        print(f"A blind rewrite (baseline)   {blind_fixed:>2}/{attempted} = {blind_fixed/attempted:.1%}")
         if n_reviewed:
-            print(f"B 组 带审查器意见          {repaired:>2}/{n_reviewed} = {repaired/n_reviewed:.1%}"
-                  f"    （仅 {n_reviewed} 道被报警）")
-        print(f"C 组 带反思建议            {reflect_fixed:>2}/{attempted} = {reflect_fixed/attempted:.1%}")
+            print(f"B reviewer advice            {repaired:>2}/{n_reviewed} = {repaired/n_reviewed:.1%}"
+                  f"    (only {n_reviewed} flagged)")
+        print(f"C reflection advice          {reflect_fixed:>2}/{attempted} = {reflect_fixed/attempted:.1%}")
         print("-" * 64)
-        print(f"反思建议的净价值           {reflect_fixed - blind_fixed:+d} 题    ← 本轮要验证的")
+        print(f"net value of reflection      {reflect_fixed - blind_fixed:+d} tasks   <- what this round tests")
         final = n_pass + max(blind_fixed, repaired, reflect_fixed)
-        print(f"取最佳组后通过率           {final}/{len(results)} = {final/len(results):.1%}"
-              f"   （修复前 {n_pass/len(results):.1%}）")
+        print(f"pass rate with best arm      {final}/{len(results)} = {final/len(results):.1%}"
+              f"   (before repair {n_pass/len(results):.1%})")
     else:
-        print("没有失败题，无需修复")
+        print("no failing tasks; nothing to repair")
     print(f"{'='*64}")
 
     if args.out:
@@ -346,7 +363,7 @@ def main():
         with open(args.out, "w", encoding="utf-8") as fh:
             json.dump({"summary": summary, "results": results}, fh,
                       ensure_ascii=False, indent=2)
-        print(f"\n已写入 {args.out}")
+        print(f"\nwritten to {args.out}")
 
 
 if __name__ == "__main__":

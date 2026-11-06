@@ -1,33 +1,23 @@
-# 审查器 LoRA 微调配置
+# Reviewer LoRA fine-tuning config — v4 (25% negatives, 500 steps)
 #
-# 与执行器那轮的关键差异：
-# 1. 基座换成 MiniCPM5-2B 的 SFT 版（会遵循指令），而不是之前那个 base 版
-# 2. 数据短（代码 + 问题列表约 250 token），训练快得多
-# 3. 数据只有 177 条，靠多 epoch 而非大数据量
+# Factor-isolation cell: v1's negative ratio + v3's step count.
+# Result: FPR down to 6.2%, recall 55.9% — confirms steps dominate.
 
-# 基座模型：SFT 版转换 + 4bit 量化后的 MLX 权重
 model: /Volumes/LLM/hf/MiniCPM5-2B-SFT-MLX-4bit
 
-# 审查任务数据（干净函数 + 自动注入的已知 bug）
 data: /Volumes/LLM/datasets/reviewer_mlx
 train: true
 fine_tune_type: lora
 
-# 可训练层数
 num_layers: 16
 
-# 训练规模
-# 177 条 / batch 4 ≈ 44 步每 epoch。实测 3.66 秒/步（样本短，远快于执行器的 17~25 秒），
-# 300 步约 6.8 个 epoch、18 分钟。数据少就靠多轮，但别超过 10 轮以免过拟合。
 iters: 500
 batch_size: 4
 
-# 序列长度：审查样本短（代码 + 问题列表），1024 足够
 max_seq_length: 1024
 
 learning_rate: 1e-5
 
-# 每 50 步存一次 checkpoint，崩了能续
 save_every: 50
 adapter_path: /Volumes/LLM/adapters/reviewer-v4
 
@@ -35,15 +25,13 @@ steps_per_report: 10
 steps_per_eval: 50
 val_batches: 10
 
-# 显存/内存优化
 grad_checkpoint: true
 
-# 只对回答部分计算 loss：审查指令是固定的，不该训练模型去背提示词
 mask_prompt: true
 
 lora_parameters:
   rank: 16
-  # 注意：mlx-lm 用的是 scale，不是其他框架常见的 alpha
+  # Note: mlx-lm uses `scale`, not the `alpha` other frameworks use
   scale: 32.0
   dropout: 0.0
 

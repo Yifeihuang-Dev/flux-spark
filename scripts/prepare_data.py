@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""把 Magicoder-OSS-Instruct 数据集转成 mlx-lm 的 chat 微调格式。
+"""Convert the Magicoder-OSS-Instruct dataset into mlx-lm chat fine-tuning format.
 
-输出 train.jsonl / valid.jsonl，每行形如：
-    {"messages": [{"role":"user","content":"问题"}, {"role":"assistant","content":"解答"}]}
+Writes train.jsonl / valid.jsonl, one line each:
+    {"messages": [{"role":"user","content":"problem"}, {"role":"assistant","content":"solution"}]}
 
-默认只保留 Python 样本——评估编码能力用的是 Python 题，
-同语言数据对可测量指标的提升最直接。可用 --langs 调整。
+By default only Python samples are kept — the coding evaluation uses Python
+tasks, and same-language data moves a measurable metric most directly.
+Use --langs to change that.
 """
 
 import argparse
@@ -33,9 +34,9 @@ def main() -> None:
     ap.add_argument("--n-train", type=int, default=1400)
     ap.add_argument("--n-valid", type=int, default=100)
     ap.add_argument("--langs", default="python",
-                    help="逗号分隔的语言白名单，或 all 表示不过滤")
+                    help="comma-separated language whitelist, or 'all' to skip filtering")
     ap.add_argument("--max-chars", type=int, default=6000,
-                    help="problem+solution 超过此长度则丢弃")
+                    help="drop samples where problem+solution exceeds this length")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
@@ -75,7 +76,7 @@ def main() -> None:
 
     need = args.n_train + args.n_valid
     if len(pool) < need:
-        print(f"警告: 符合条件的样本只有 {len(pool)} 条，少于需要的 {need} 条")
+        print(f"warning: only {len(pool)} samples qualify, fewer than the {need} requested")
         n_valid = min(args.n_valid, max(0, len(pool) - args.n_train))
         n_train = len(pool) - n_valid
     else:
@@ -89,9 +90,9 @@ def main() -> None:
         with open(path, "w", encoding="utf-8") as fh:
             for r in rows:
                 fh.write(json.dumps(r, ensure_ascii=False) + "\n")
-        print(f"写出 {path}: {len(rows)} 条")
+        print(f"wrote {path}: {len(rows)} rows")
 
-    print(f"扫描 {scanned} 行 -> 保留 {kept} 条 (语言: {args.langs})")
+    print(f"scanned {scanned} lines -> kept {kept} (langs: {args.langs})")
 
 
 if __name__ == "__main__":
