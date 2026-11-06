@@ -1,104 +1,104 @@
-# 代码大模型微调实验报告
+# Code-LLM Fine-Tuning Experiment Report
 
-**项目名称：Flux Spark** —— 本地小模型自主写代码、并对照需求自查自纠的自主闭环；命令行入口 `fluxspark.py`
+**Project: Flux Spark** — a local small-model loop that writes code autonomously and self-checks/self-repairs against the requirement; CLI entry point `fluxspark.py`
 
-**日期**：2026-10-26 ~ 2026-10-27
-**第一轮（执行器）**：验证「写代码」这条路走不走得通 → **微调无效**
-**第二轮（审查器）**：验证「找 bug」值不值得微调 → **显著有效**
+**Dates**: 2026-10-26 ~ 2026-10-27
+**Round 1 (executor)**: does the "write code" path work at all via fine-tuning? → **No effect**
+**Round 2 (reviewer)**: is "find bugs" worth fine-tuning? → **Clearly effective**
 
-> **两轮结果速览**
+> **Results at a glance**
 >
-> | 轮次 | 角色 | 手段 | 结果 |
+> | Round | Role | Method | Outcome |
 > |---|---|---|---|
-> | 第一轮 | 执行器 | LoRA 微调 | 无效，三轮评估方向各异，全部落在噪声内 |
-> | 第二轮 | 审查器 | LoRA 微调 | **显著有效：召回 26.5% → 76.5%（+50 pp）** |
-> | **第三轮** | **执行器** | **换 SFT 基座（非微调）** | **+58 pp：HumanEval 14.6% → 72.6%** |
+> | Round 1 | Executor | LoRA fine-tune | No effect; three evaluations point in different directions, all within noise |
+> | Round 2 | Reviewer | LoRA fine-tune | **Clearly effective: strict recall 26.5% → 76.5% (+50 pp)** |
+> | **Round 3** | **Executor** | **Swap to SFT base (no fine-tuning)** | **+58 pp: HumanEval 14.6% → 72.6%** |
 >
-> **同一个基座、同一套 LoRA 流程，换个角色天壤之别**——差别在于这个能力是不是模型本来就有的：教它写码是给已掌握的技能换风格，教它审查是补短板。
+> Same base, same LoRA recipe, completely different outcomes by role — the difference is whether the capability was already there: teaching a model to write code restyles a skill it already has; teaching it to review fills a real gap.
 >
-> 但第三轮给出了更大的教训：**在用对的尺子（HumanEval）下，换对基座带来的 +58 pp，远超我们花十几个小时做微调得到的 ±3 pp。** 之前所有关于执行器的判断，都建立在一把偏软的自造尺子上。
+> Round 3 carried the bigger lesson: **under the right yardstick (HumanEval), swapping the base bought +58 pp — dwarfing the ±3 pp we got from a dozen hours of fine-tuning.** Every earlier judgment about the executor rested on a too-soft homemade yardstick.
 
 ---
 
-# 第一轮：执行器微调
+# Round 1: Executor fine-tuning
 
-## 结论（先说）
+## Conclusion first
 
-**能力层面：微调效果在统计上与零无法区分。风格层面：微调显著改变了模型——它变得啰嗦了。**
+**Capability: fine-tuning is statistically indistinguishable from zero. Style: fine-tuning changed the model dramatically — it became verbose.**
 
-三轮评估，三个不同的方向：
+Three evaluations, three different directions:
 
-| 评估方式 | 基线 | 微调后 | 差值 |
+| Evaluation | Baseline | Fine-tuned | Delta |
 |---|---|---|---|
-| 8 题 × 1 次（贪心） | 75.0% (6/8) | 62.5% (5/8) | **−12.5 pp** |
-| 31 题 × 1 次（贪心） | 67.7% (21/31) | 71.0% (22/31) | **+3.3 pp** |
-| **31 题 × 3 次（1 贪心 + 2 采样）** | **66.7% (62/93)** | **63.4% (59/93)** | **−3.2 pp** |
+| 8 tasks × 1 (greedy) | 75.0% (6/8) | 62.5% (5/8) | **−12.5 pp** |
+| 31 tasks × 1 (greedy) | 67.7% (21/31) | 71.0% (22/31) | **+3.3 pp** |
+| **31 tasks × 3 (1 greedy + 2 sampled)** | **66.7% (62/93)** | **63.4% (59/93)** | **−3.2 pp** |
 
-三次测量方向各不相同，这本身就是最强证据：**真实效应量接近 0，任何方向的结果都是噪声**。
+Three measurements, three directions — that itself is the strongest evidence: **the true effect size is near zero, and any directional result is noise.**
 
-精细测试进一步坐实了这一点——31 题中，**10 题提升、11 题下降**，几乎完全对称；"三次全对"的题数两边都是 **11/31**，一模一样。这是随机波动的典型形态，不是系统性的能力提升或退化。
+A finer test confirms it — across the 31 tasks, **10 improved and 11 regressed**, almost perfectly symmetric; the count of "3-for-3" tasks is **11/31 on both sides**, identical. That is the signature of random fluctuation, not a systematic capability change.
 
-**但风格层面发生了明确且剧烈的变化**（详见第五节）：原始输出长度从 423 字符涨到 769 字符（**+82%**），而代码本身反而从 237 字符缩短到 204 字符。**多出来的内容不在代码里，也不在开头，而在代码之后**——模型学会了 Magicoder 的"代码 + 使用示例 + 说明"输出形态。
+**But style did change, dramatically** (see Section 5): raw output length grew from 423 to 769 characters (**+82%**), while the code itself shrank from 237 to 204 characters. **The extra content is not in the code, not in the preamble — it comes after the code**: the model learned Magicoder's "code + usage example + explanation" output shape.
 
-> **修正说明**：本报告初版基于 8 题结果判定"负收益"，第二版基于 31 题贪心判定"略优"，均为过度解读。三轮合并后，能力层面的结论收敛为**无显著差异**。
+> **Correction note**: the first draft of this report judged "negative return" from the 8-task run, then "slightly better" from the 31-task greedy run — both were over-readings. Merged across three runs, the capability conclusion converged to **no significant difference**.
 
 ---
 
-## 一、实验环境
+## 1. Environment
 
-| 项目 | 情况 |
+| Item | Detail |
 |---|---|
-| 机器 | Apple Silicon（arm64），16GB 统一内存 |
-| 外接 SSD | `/Volumes/LLM`，232 GB 可用，实测写入 437 MB/s |
-| 计算框架 | MLX + mlx-lm 0.32.2 |
-| GPU 算力 | Metal 可用，实测约 **1.93 TFLOPS** |
-| Python | 3.13.0，**原生 arm64 运行**（`proc_translated=0`，非 Rosetta） |
+| Machine | Apple Silicon (arm64), 16 GB unified memory |
+| External SSD | `/Volumes/LLM`, 232 GB free, measured write 437 MB/s |
+| Framework | MLX + mlx-lm 0.32.2 |
+| GPU | Metal available, measured ~**1.93 TFLOPS** |
+| Python | 3.13.0, **native arm64** (`proc_translated=0`, not Rosetta) |
 
-> 本机 Python 是 Universal 二进制，系统自动选择了 arm64 那份，因此 MLX 与 Metal 加速均可正常使用。
+> The system Python is a universal binary and picked arm64 automatically, so MLX and Metal acceleration both work.
 
-## 二、模型与数据
+## 2. Model and data
 
-**基座模型**：`openbmb/MiniCPM5-2B-MLX`（官方 MLX 版，1.33 GB，Q4 量化）
+**Base model**: `openbmb/MiniCPM5-2B-MLX` (official MLX build, 1.33 GB, Q4 quantized)
 
-**训练数据**：`Magicoder-OSS-Instruct-75K`
-- 原始 75,197 条，筛出 Python 样本 36,894 条
-- 实际取用 5,000 条训练 + 200 条验证
+**Training data**: `Magicoder-OSS-Instruct-75K`
+- 75,197 raw samples, filtered to 36,894 Python samples
+- Actually used: 5,000 train + 200 validation
 
-**训练配置**：
+**Training config**:
 
-| 参数 | 值 |
+| Param | Value |
 |---|---|
-| 微调方式 | LoRA（rank 16，scale 32，作用于 16 层） |
-| 可训练参数 | 956.8 万 / 25.17 亿（**0.38%**） |
-| 步数 / batch | 1,000 步 / batch 4 |
-| 序列长度 | 1,024 |
-| 学习率 | 1.0e-5（Adam） |
-| 梯度检查点 | 开启 |
-| loss 掩码 | `mask_prompt`，只对回答部分计算 loss |
+| Method | LoRA (rank 16, scale 32, on 16 layers) |
+| Trainable params | 9.568 M / 2.517 B (**0.38%**) |
+| Steps / batch | 1,000 / batch 4 |
+| Seq length | 1,024 |
+| LR | 1.0e-5 (Adam) |
+| Gradient checkpointing | On |
+| Loss mask | `mask_prompt` — loss computed on answers only |
 
-## 三、训练结果
+## 3. Training results
 
-训练于 **2026-10-27 03:07** 正常结束（exit 0），1,000/1,000 步全部完成。
+Training finished normally (**2026-10-27 03:07**, exit 0), 1,000/1,000 steps.
 
-| 指标 | 起始 | 结束 | 变化 |
+| Metric | Start | End | Change |
 |---|---|---|---|
 | val loss | 0.628 | **0.351** | ↓ 44% |
-| train loss | 0.476（第10步） | 0.34~0.40 区间 | ↓ |
+| train loss | 0.476 (step 10) | 0.34–0.40 range | ↓ |
 
-**21 个 checkpoint 全部落盘**（每 50 步一个，各 37 MB）。
-训练速度实测 **39~51 tokens/秒**，全程约 6 小时。
+**All 21 checkpoints saved** (every 50 steps, 37 MB each).
+Throughput measured **39–51 tokens/s**, ~6 hours total.
 
-> **val loss 下降 44%，但编码能力没有对应提升。** 这组对照很关键：loss 降了只说明模型更贴合训练数据的分布，而 Magicoder 的分布与实际编码任务并不重合。
+> **val loss fell 44%, yet coding capability did not improve.** This contrast matters: falling loss only means the model fits the training distribution better — and Magicoder's distribution does not overlap much with real coding tasks.
 
-## 四、评估方法
+## 4. Evaluation method
 
-给模型一个函数签名描述 → 让它写出实现 → 提取代码 `exec` → 用 `assert` 跑单元测试。
+Give the model a function signature description → it writes the implementation → extract code and `exec` → run unit tests with `assert`.
 
-31 道题覆盖：数组/列表（9）、字符串（8）、数学（8）、排序查找（3）、结构转换（3）。
+The 31 tasks cover: arrays/lists (9), strings (8), math (8), sorting/searching (3), structure transforms (3).
 
-### 31 题逐题对比
+### Per-task results (31 tasks)
 
-| 题目 | 基线 | 微调后 |
+| Task | Baseline | Fine-tuned |
 |---|---|---|
 | two_sum | PASS | PASS |
 | dedup_keep_order | PASS | PASS |
@@ -131,741 +131,705 @@
 | sort_list | FAIL | FAIL |
 | matrix_transpose | FAIL | FAIL |
 | dict_invert | PASS | PASS |
-| **合计** | **21/31 (67.7%)** | **22/31 (71.0%)** |
+| **Total** | **21/31 (67.7%)** | **22/31 (71.0%)** |
 
-微调版净变化：修好 3 题（is_palindrome、caesar_cipher、roman_to_int），未出现由 PASS 变 FAIL 的退化——这一点比 8 题版看到的"搞坏 3 题"要健康。
+Net change for the fine-tuned model: 3 fixed (is_palindrome, caesar_cipher, roman_to_int), and **no PASS→FAIL regressions** — healthier than the "broke 3 tasks" picture from the 8-task run.
 
-### 精细测试（31 题 × 3 次采样）
+### Fine test (31 tasks × 3 samples)
 
-为排除单次采样的偶然性，每题采样 3 次（1 次贪心 + 2 次 temperature 0.8），每模型共 93 次生成。
+To remove single-sample luck, each task was sampled 3 times (1 greedy + 2 at temperature 0.8) — 93 generations per model.
 
-**整体**
+**Overall**
 
-| 指标 | 基座 | 微调后 |
+| Metric | Base | Fine-tuned |
 |---|---|---|
-| 总体通过率 | 62/93 = 66.7% | 59/93 = 63.4% |
-| 三次全对的题数 | 11/31 | **11/31** |
-| 三次全错的题数 | 4/31 | 3/31 |
+| Overall pass rate | 62/93 = 66.7% | 59/93 = 63.4% |
+| Tasks passing 3/3 | 11/31 | **11/31** |
+| Tasks failing 3/3 | 4/31 | 3/31 |
 
-**分题型**
+**By category**
 
-| 题型 | 基座 | 微调后 | 差值 |
+| Category | Base | Fine-tuned | Delta |
 |---|---|---|---|
-| 字符串 | 62.5% | 62.5% | 0.0 pp |
-| 排序查找 | 55.6% | 66.7% | +11.1 pp |
-| 数学 | 74.1% | 66.7% | −7.4 pp |
-| 数组 | 59.3% | 55.6% | −3.7 pp |
-| 结构转换 | 100.0% | 83.3% | −16.7 pp |
+| Strings | 62.5% | 62.5% | 0.0 pp |
+| Sorting/searching | 55.6% | 66.7% | +11.1 pp |
+| Math | 74.1% | 66.7% | −7.4 pp |
+| Arrays | 59.3% | 55.6% | −3.7 pp |
+| Structure transforms | 100.0% | 83.3% | −16.7 pp |
 
-**逐题差异分布**：10 题提升、11 题下降、10 题持平。提升与下降几乎完全对称，是随机波动的典型形态，而非系统性变化。
+**Per-task delta distribution**: 10 up, 11 down, 10 flat. Near-perfect symmetry — random fluctuation, not systematic change.
 
-**失败模式**
+**Failure modes**
 
-| 失败类型 | 基座 | 微调后 |
+| Failure type | Base | Fine-tuned |
 |---|---|---|
-| 逻辑错误 | 22 | 20 |
-| 语法错误 | 5 | 3 |
+| Logic errors | 22 | 20 |
+| Syntax errors | 5 | 3 |
 | NameError | 2 | 5 |
 | TypeError | 2 | 3 |
-| 其他 | 0 | 3 |
+| Other | 0 | 3 |
 
-失败以**逻辑错误为主**（约占总失败的 2/3），语法错误反而略有减少——微调没有破坏语法能力，问题出在解题逻辑上。
+Failures are dominated by **logic errors** (~2/3 of all failures); syntax errors slightly decreased — fine-tuning did not break syntax; the problem is task logic.
 
-## 五、分析与解读
+## 5. Analysis
 
-### 1. 小样本评估的陷阱（本轮最大教训）
+### 1. The small-sample trap (this round's biggest lesson)
 
-8 题时 1 题之差 = 12.5 pp，足以把结论从"提升"翻转成"倒退"。31 题下 1 题之差仍有 3.2 pp。**要可靠检测几个百分点的差异，需要 100 题以上**（HumanEval 164 题、MBPP 500 题这个量级）。
+With 8 tasks, one task = 12.5 pp — enough to flip "improved" into "regressed". With 31 tasks, one task is still 3.2 pp. **Reliably detecting a few percentage points requires 100+ tasks** (HumanEval's 164, MBPP's 500).
 
-**在样本量不够之前，任何"提升了/变差了"的判断都是自欺欺人。**
+**Before the sample size is sufficient, any "it improved / it regressed" claim is self-deception.**
 
-### 2. 风格确实被改了，但能力没跟着走（精细测试的实锤）
+### 2. Style changed, capability didn't follow (hard evidence from the fine test)
 
-| 风格指标 | 基座 | 微调后 | 变化 |
+| Style metric | Base | Fine-tuned | Change |
 |---|---|---|---|
-| 原始输出长度 | 423 字符 | **769 字符** | **+82%** |
-| 代码长度 | 237 字符 | 204 字符 | −33 |
-| 代码行数 | 9.0 行 | 6.2 行 | −2.8 |
-| 代码前废话长度 | 94 字符 | 97 字符 | +3 |
-| 输出超 800 字符占比 | 12% | **38%** | 3 倍 |
-| 使用代码围栏 | 95% | 96% | 持平 |
+| Raw output length | 423 chars | **769 chars** | **+82%** |
+| Code length | 237 chars | 204 chars | −33 |
+| Code lines | 9.0 | 6.2 | −2.8 |
+| Preamble length | 94 chars | 97 chars | +3 |
+| Outputs over 800 chars | 12% | **38%** | 3× |
+| Uses code fences | 95% | 96% | flat |
 
-**输出长度翻倍，代码本身反而变短了。** 多出来的约 380 字符既不在代码里，也不在开头废话里（94→97 几乎没动），而只在**代码之后**——模型学会了 Magicoder 的「代码 + 使用示例 + 说明」输出形态。
+**Output doubled in length while the code itself got shorter.** The extra ~380 characters are neither in the code nor in the preamble (94→97 barely moved) — they come **after the code**: the model learned Magicoder's "code + usage example + explanation" shape.
 
-这就是"风格错位"假设的直接证据：**微调确实生效了**（模型行为被显著改变），但改变的方向是**表达方式**，不是**解题能力**。那些追加的示例和说明对通过单元测试毫无帮助，还拖慢了生成速度、增加了 token 消耗。
+This is direct evidence for the "style mismatch" hypothesis: **the fine-tuning did take effect** (behavior changed significantly), but what changed was **expression style**, not **problem-solving ability**. The appended examples and explanations do nothing for passing unit tests — they only slow generation and burn tokens.
 
-### 3. 为什么能力推不上去
+### 3. Why capability wouldn't move
 
-- **基线已很强**：MiniCPM5-2B 原始模型直接就有 67.7%，本身经过大量代码训练。靠风格不匹配、质量参差的合成数据很难再往上推。
-- **效应被稀释**：LoRA 只动了 0.38% 的参数，学习率 1e-5、1,000 步——足以改变输出风格，但不足以系统性提升底层解题能力。
-- **数据与目标不重合**：训练数据是"复杂项目 → 长代码"，目标是"短函数正确实现"。两者的能力并不等价。
+- **Baseline already strong**: stock MiniCPM5-2B scores 67.7% out of the box — it has seen plenty of code. Pushing further with style-mismatched, uneven synthetic data is hard.
+- **Diluted effect**: LoRA touches 0.38% of parameters, LR 1e-5, 1,000 steps — enough to change output style, not enough to systematically improve underlying problem-solving.
+- **Data–objective mismatch**: training data is "complex project → long code"; the objective is "short function, correct implementation". Not the same capability.
 
-### 4. 值得肯定的部分
+### 4. What deserves credit
 
-- 微调版**没有出现能力退化**（31 题中无 PASS→FAIL），说明训练过程本身是稳定的，没有把模型训坏。
-- val loss 从 0.628 降到 0.351，训练流程、配置、checkpoint 机制全部验证可用。
-- 整套流水线（下载 → 准备数据 → 训练 → 评估）已经跑通，下一轮换数据/调参可以直接复用。
+- The fine-tuned model shows **no capability regression** (no PASS→FAIL among the 31) — the training process itself is stable and didn't break the model.
+- val loss 0.628 → 0.351; the whole training pipeline (configs, checkpointing) is verified working.
+- The full loop (download → prepare data → train → evaluate) runs end to end and is reusable for the next round.
 
-### 5. 能力画像与最佳用法（本轮最有价值的发现）
+### 5. Capability profile and best usage (this round's most valuable finding)
 
-按三次采样中的表现，31 题分成三档：
+By behavior across 3 samples, the 31 tasks fall into three tiers:
 
-| 档位 | 题数 | 代表题目 |
+| Tier | Count | Representative tasks |
 |---|---|---|
-| 稳定会做（3/3） | 4 | is_power_of_two、is_prime、sum_of_digits、matrix_transpose |
-| **会但不稳（1~2/3）** | **16** | 去重、旋转、FizzBuzz、回文、斐波那契、合并有序表、有效括号… |
-| 稳定不会（0/3） | 4 | roman_to_int、longest_common_prefix、sort_list、max_pair_product |
+| Consistently can (3/3) | 4 | is_power_of_two, is_prime, sum_of_digits, matrix_transpose |
+| **Can but unstable (1–2/3)** | **16** | dedup, rotate, FizzBuzz, palindrome, fibonacci, merge sorted lists, valid parentheses… |
+| Consistently can't (0/3) | 4 | roman_to_int, longest_common_prefix, sort_list, max_pair_product |
 
-**超过一半的题目处在"会做但不稳定"这一档**——模型知道该怎么写，只是经常写错。
+**More than half the tasks sit in "can do but unstable"** — the model knows what to write; it just often writes it wrong.
 
-这直接指向正确用法：
+This points directly at correct usage:
 
-| 用法 | 通过率 |
+| Usage | Pass rate |
 |---|---|
-| 单次贪心直接问 | 67.7%（基座） / 71.0%（微调） |
-| **采样 3 次 + 用单元测试筛选出通过的** | **87.1%（基座） / 90.3%（微调）** |
+| Single greedy shot | 67.7% (base) / 71.0% (tuned) |
+| **3 samples + filter by unit tests** | **87.1% (base) / 90.3% (tuned)** |
 
-**同一个模型，换个用法，可用率从 67% 跳到 87%。** 这个提升（约 +20 pp）远大于微调带来的（±3 pp，且落在噪声内）。
+**Same model, different usage: usable rate jumps from 67% to 87%.** That gain (~+20 pp) dwarfs fine-tuning's (±3 pp, within noise).
 
-结论：**提升可用性的关键不是继续微调，而是"多采样 + 测试筛选"——即架构里的验证层。** 微调是最贵、收益最不确定的一环；验证层零训练成本、收益立竿见影。
+Conclusion: **the key to usability is not more fine-tuning but "sample more + filter by tests" — i.e., the verification layer of the architecture.** Fine-tuning is the most expensive and least certain link; the verification layer costs zero training and pays immediately.
 
-## 六、结论
+## 6. Conclusions
 
-1. **能力层面：微调效果与零无法区分。** 三轮评估给出三个不同方向（−12.5 / +3.3 / −3.2 pp）；精细测试显示提升 10 题、下降 11 题，"三次全对"的题数两边完全相同（11 vs 11）。这是随机波动，不是系统变化。
-2. **风格层面：微调显著生效了。** 输出长度 +82%，代码本身却更短——模型确实学会了 Magicoder 的表达形态。问题不是"没训进去"，而是训进去的东西对解题无用。
-3. **loss 不是能力的代理指标。** val loss 下降 44%（0.628→0.351），能力纹丝不动。
-4. **小样本评估不可作为决策依据。** 8 题、31 题、31×3 题三轮测量方向各异，全部落在噪声内。
-5. 整套流水线（下载→准备→训练→评估）已验证可用，**瓶颈在数据选择，不在工程**。
-6. **用法 > 微调**：同一模型单次提问 67%，采样 3 次 + 测试筛选则 87%。继续投微调之前，应先把验证层这条零成本路径的收益吃到手。
+1. **Capability: fine-tuning is indistinguishable from zero.** Three runs, three directions (−12.5 / +3.3 / −3.2 pp); the fine test shows 10 up / 11 down with identical "3-for-3" counts (11 vs 11). Random noise, not signal.
+2. **Style: fine-tuning clearly worked.** Output length +82% while code got shorter — the model did learn Magicoder's shape. The problem isn't "nothing was learned"; it's that what was learned doesn't help problem-solving.
+3. **Loss is not a proxy for capability.** val loss fell 44% (0.628→0.351) while capability didn't move.
+4. **Small-sample evaluation cannot drive decisions.** Three rounds of measurement, three directions, all within noise.
+5. The full pipeline (download→prepare→train→evaluate) is verified working; **the bottleneck is data selection, not engineering**.
+6. **Usage > fine-tuning**: same model, 67% single-shot vs 87% with 3-sample + test filtering. Before spending on more fine-tuning, harvest the zero-cost verification-layer gain first.
 
-## 七、下一步建议（按优先级）
+## 7. Next steps (by priority)
 
-| 优先级 | 动作 | 理由 |
+| Priority | Action | Rationale |
 |---|---|---|
-| **P0（首选）** | **搭「采样 N 次 + 单元测试筛选」流水线**：让模型对同一题生成 3 个候选，逐个跑测试，返回第一个通过的 | 零训练成本，可用性 67%→87%（+20 pp），远大于微调的收益；这正是架构里"验证层"的落地 |
-| **P0** | 换评估基准：接入 HumanEval（164 题）或 MBPP（500 题） | 手写 31 题仍不足以支撑决策，标准基准才有统计效力，也便于对外比较 |
-| **P1** | 换数据：改用 `evol-codealpaca` 等「短指令 → 简洁代码」风格数据，或从 Magicoder 筛短样本 | 直接针对风格错位这个主因 |
-| **P1+** | **数据清洗时直接砍掉 solution 中代码之后的内容**（使用示例、说明文字），只训练"输出纯代码" | 精细测试已证：输出膨胀 82% 的元凶就是这部分。这是最省力、最直接的修复点 |
-| **P2** | 调参：学习率 5e-6、减少步数、训练数据混入通用指令防遗忘 | 降低风格污染，保留原有能力 |
-| **P3** | 改进评估脚本：增大 `max_tokens`、兼容"先解释后代码"的输出 | 当前提取器对带解释的输出较脆弱，可能低估模型 |
-| — | 路由器、审查器 | **暂缓**。执行器这条路尚未验证出正向收益，往上堆角色没有意义 |
+| **P0 (first)** | **Build "sample N + filter by unit tests"**: generate 3 candidates per task, run tests, return the first pass | Zero training cost; usability 67%→87% (+20 pp), far beyond fine-tuning. This is the verification layer made real |
+| **P0** | Switch benchmarks: HumanEval (164) or MBPP (500) | 31 homemade tasks can't support decisions; standard benchmarks have statistical power and enable external comparison |
+| **P1** | Change data: `evol-codealpaca`-style "short instruction → concise code", or filter Magicoder for short samples | Directly targets the style mismatch |
+| **P1+** | **During data cleaning, strip everything after the code in solutions** (usage examples, explanations); train on "pure code output" only | The fine test proved this bloat is the cause of the +82% output growth. Cheapest, most direct fix |
+| **P2** | Tuning: LR 5e-6, fewer steps, mix in general instructions to prevent forgetting | Reduce style pollution, keep existing capability |
+| **P3** | Improve eval scripts: larger `max_tokens`, tolerate "explanation before code" outputs | Current extractor is brittle with explanatory outputs and may underestimate the model |
+| — | Router, reviewer | **On hold.** The executor path hasn't shown positive returns; stacking roles on top is pointless |
 
-## 八、资产清单
+## 8. Assets
 
-| 类型 | 路径 |
+| Type | Path |
 |---|---|
-| 基座模型 | `/Volumes/LLM/hf/openbmb__MiniCPM5-2B-MLX` |
-| 训练数据 | `/Volumes/LLM/datasets/magicoder_mlx/{train,valid}.jsonl` |
-| 原始数据集 | `/Volumes/LLM/datasets/magicoder_oss.jsonl`（193 MB） |
-| LoRA 权重 | `/Volumes/LLM/adapters/executor-v1/`（21 个 checkpoint） |
-| 训练日志 | `/Volumes/LLM/logs/train.log` |
-| 评估结果 | `/Volumes/LLM/logs/eval30_{base,tuned}.json` |
-| 评估脚本 | `scripts/eval_coding.py`（31 题） |
-| 数据准备 | `scripts/prepare_data.py` |
-| 训练配置 | `scripts/train_lora.yaml` |
-| 无人值守启动 | `scripts/run_train.sh` |
-| 模型下载 | `scripts/fetch_models.sh` |
+| Base model | `/Volumes/LLM/hf/openbmb__MiniCPM5-2B-MLX` |
+| Training data | `/Volumes/LLM/datasets/magicoder_mlx/{train,valid}.jsonl` |
+| Raw dataset | `/Volumes/LLM/datasets/magicoder_oss.jsonl` (193 MB) |
+| LoRA weights | `/Volumes/LLM/adapters/executor-v1/` (21 checkpoints) |
+| Training log | `/Volumes/LLM/logs/train.log` |
+| Eval results | `/Volumes/LLM/logs/eval30_{base,tuned}.json` |
+| Eval script | `scripts/eval_coding.py` (31 tasks) |
+| Data prep | `scripts/prepare_data.py` |
+| Training config | `scripts/train_lora.yaml` |
+| Unattended launcher | `scripts/run_train.sh` |
+| Model download | `scripts/fetch_models.sh` |
 
-### 常用命令
+### Common commands
 
 ```bash
-# 评估基线
+# Evaluate baseline
 python3 scripts/eval_coding.py --model /Volumes/LLM/hf/openbmb__MiniCPM5-2B-MLX
 
-# 评估微调后
+# Evaluate fine-tuned
 python3 scripts/eval_coding.py --model /Volumes/LLM/hf/openbmb__MiniCPM5-2B-MLX \
     --adapter /Volumes/LLM/adapters/executor-v1
 
-# 重新训练（改配置后）
+# Retrain (after config changes)
 nohup caffeinate -dimsu bash scripts/run_train.sh &
 ```
 
 ---
 
-# 第二轮：审查器微调（明确正向结果）
+# Round 2: Reviewer fine-tuning (a clearly positive result)
 
-## 一、为什么换目标
+## 1. Why switch targets
 
-第一轮执行器微调收效为零（三轮评估方向各异，全部落在噪声内）。复盘后判断：**最该微调的不是执行器，而是审查器**。
+Round 1's executor fine-tuning yielded nothing (three runs, three directions, all within noise). The post-mortem concluded: **the role worth fine-tuning is not the executor but the reviewer.**
 
-1. 审查是**判别任务**（在已有代码里找问题），比生成任务（从零构造正确解）容易得多。
-2. 审查数据的标签**可以 100% 自动验证**——拿干净函数注入已知 bug，标签就是我们亲手塞进去的东西，不需要任何人工标注。这一条直接解决了第一轮卡住的"数据难构造且难验证"死结。
-3. 它直接服务于架构里的验证层。
+1. Reviewing is a **discriminative task** (find problems in existing code), far easier than generation (construct a correct solution from scratch).
+2. Review labels are **100% automatically verifiable** — inject known bugs into clean functions; the label is exactly what we injected. No manual annotation. This unties Round 1's "data is hard to build and hard to verify" knot.
+3. It directly serves the architecture's verification layer.
 
-## 二、关键排查：之前一直用的是 Base 版模型
+## 2. Key discovery: we had been using the Base model all along
 
-调试审查任务时发现 `mlx_lm.generate` 传字符串**不会自动套 chat template**，模型退化成裸续写（表现为复读提示词）。排查中进一步确认：
+While debugging the reviewer task we found `mlx_lm.generate` with a raw string **does not apply the chat template** — the model degenerates to raw continuation (parroting the prompt). Further digging confirmed:
 
-**一直在用的 `MiniCPM5-2B-MLX` 是 Base 版**，而官方另有 `MiniCPM5-2B-SFT`（真正的指令微调版，4.7GB），只是没有现成的 MLX 版本。
+**The `MiniCPM5-2B-MLX` we had been using is the Base version.** The official `MiniCPM5-2B-SFT` (the true instruction-tuned model, 4.7 GB) exists but had no ready MLX build.
 
-| 现象 | 解释 |
+| Symptom | Explanation |
 |---|---|
-| 执行器测出 67% | "写代码"本质是续写，base 模型本来就擅长 |
-| 执行器微调无效 | base 靠续写已到上限，教它风格纯属添乱 |
-| 审查器基线只会瞎报 | base 不会遵循指令输出结构化结果 |
+| Executor scored 67% | "Writing code" is fundamentally continuation; base models are good at that |
+| Executor fine-tuning useless | Base was already at its continuation ceiling; restyling it just adds noise |
+| Reviewer baseline only spammed | Base cannot follow instructions to produce structured output |
 
-已下载 SFT 版并转 MLX 4bit（1.3GB）作为新基座。
+Downloaded the SFT version and converted to MLX 4-bit (1.3 GB) as the new base.
 
-> **副作用**：这也意味着第一轮执行器的 67.7% 是在"裸续写"模式下测的。换成 SFT 版 + 正确套模板后重测，基线可能不同——这是待办。
+> **Side effect**: Round 1's 67.7% was measured in raw-continuation mode. Re-measured with the SFT model + proper templating, the baseline could be different — a to-do at the time.
 
-## 三、数据构造
+## 3. Data construction
 
-- 72 个干净种子函数 × 60+ 变异算子（边界条件 / 空值处理 / 逻辑错误）
-- 变异用精确字符串替换，注入位置可控
-- 产物：177 训练 / 16 验证 / 64 测试，共 194 个注入 bug
-- **三个 split 的种子函数零重叠**：测试集里的函数从未在训练中出现，测的是审查能力而非背书
+- 72 clean seed functions × 60+ mutation operators (boundary conditions / null handling / logic errors)
+- Mutations applied as exact string replacements, with controllable injection sites
+- Output: 177 train / 16 validation / 64 test, 194 injected bugs in total
+- **Zero seed overlap across the three splits**: functions in the test set never appeared in training — we measure reviewing skill, not memorization
 
-## 四、结果（64 条测试集）
+## 4. Results (64-task test set)
 
-| 指标 | 基线（未微调） | 50 步 | **300 步（最佳）** |
+| Metric | Baseline (no FT) | 50 steps | **300 steps (best)** |
 |---|---|---|---|
-| 严格召回 | 26.5% (18/68) | 48.5% | **76.5% (52/68)** |
-| 宽松召回 | 95.8% | 70.8% | 93.8% |
-| 误报率 | 56.2% (9/16) | 18.8% | **31.2% (5/16)** |
-| 完全报对 | 16.7% (8/48) | 35.4% | **66.7% (32/48)** |
-| 报出/实际 | 1.51（乱报） | 0.60（欠报） | **0.99（校准准确）** |
+| Strict recall | 26.5% (18/68) | 48.5% | **76.5% (52/68)** |
+| Loose recall | 95.8% | 70.8% | 93.8% |
+| False positive rate | 56.2% (9/16) | 18.8% | **31.2% (5/16)** |
+| Exactly correct reports | 16.7% (8/48) | 35.4% | **66.7% (32/48)** |
+| Reported/actual | 1.51 (spamming) | 0.60 (under-reporting) | **0.99 (calibrated)** |
 
-**严格召回 +50 pp，完全报对翻 4 倍，误报率下降 25 pp。**
+**Strict recall +50 pp, exactly-correct reports ×4, false positives −25 pp.**
 
-`报出/实际 = 0.99` 是最漂亮的一项：注入 68 个 bug、模型报出 67 条，数量与真值严丝合缝，既不乱报也不漏报。
+`reported/actual = 0.99` is the prettiest number: 68 bugs injected, 67 reported — counts line up with ground truth; neither spamming nor silence.
 
-## 五、两个反直觉的发现
+## 5. Two counter-intuitive findings
 
-**1. val loss 最低的 checkpoint 不是最好的。**
+**1. The checkpoint with the lowest val loss was not the best.**
 
-50 步 val loss 0.842，300 步 1.111（涨了 32%），但 300 步的召回高 28 pp。50 步的问题是**欠报**——报出/实际只有 0.60，它太保守，只敢报六成。
+Step 50: val loss 0.842. Step 300: 1.111 (+32%) — yet step 300's recall is 28 pp higher. Step 50's problem is **under-reporting** — reported/actual only 0.60; too conservative, it only dares flag 60%.
 
-这与第一轮"loss 不是能力的代理指标"是同一个教训，但这次更极端：**val loss 涨了 32%，能力反而涨了 28 pp**。
+Same lesson as Round 1's "loss is not a capability proxy", but starker: **val loss rose 32% while capability rose 28 pp.**
 
-**2. 基线 95.8% 的"宽松召回"是假象。**
+**2. The baseline's 95.8% "loose recall" is an illusion.**
 
-它必须和 56.2% 的误报率一起看：模型不是"看出问题"，而是**看到代码就报问题**。这与复读是另一种极端——一个是完全不输出，一个是无差别输出。
+It must be read together with the 56.2% false-positive rate: the model isn't "spotting problems", it's **flagging every piece of code it sees**. The opposite extreme of parroting — one outputs nothing, the other outputs indiscriminately.
 
-## 六、为什么审查器能成，执行器不成
+## 6. Why the reviewer worked and the executor didn't
 
-| | 执行器 | 审查器 |
+| | Executor | Reviewer |
 |---|---|---|
-| 任务本质 | 续写代码 | 遵循指令 + 结构化输出 |
-| 基座自带能力 | 强（靠续写） | 无（只会瞎报） |
-| 微调空间 | 几乎没有 | 巨大 |
-| 实测结果 | 噪声内（±3 pp） | **+50 pp 召回** |
+| Task nature | Continue code | Follow instructions + structured output |
+| Built-in base ability | Strong (via continuation) | None (only spams) |
+| Fine-tuning headroom | Almost none | Huge |
+| Measured | Within noise (±3 pp) | **+50 pp recall** |
 
-底座本来就"会写代码但不会审查"。教它审查是**补短板**，所以见效；教它写代码是给已掌握的技能换风格，所以无效还添乱。
+The base already "knows how to write code but can't review". Teaching it to review **fills a gap**, so it works; teaching it to write restyles a skill it already has, so it's useless and adds noise.
 
-**选型结论得到验证：审查器是这套架构里最值得微调的角色。**
+**The role-selection hypothesis is confirmed: the reviewer is the role most worth fine-tuning in this architecture.**
 
 ---
 
-## 更新记录
+## Update log
 
-- **2026-10-27 03:07**：1,000 步训练正常完成，val loss 0.628 → 0.351。
-- **2026-10-27 早晨（8 题版）**：75% → 62.5%，一度判定负收益。
-- **2026-10-27 早晨（31 题贪心）**：67.7% → 71.0%，方向反转，修正为"与零无法区分"。
-- **2026-10-27（31 题 × 3 次精细测试）**：66.7% → 63.4%，第三次方向变化。
-  - 能力：提升 10 题 / 下降 11 题，三次全对题数 11 vs 11 → **确认能力无显著差异**。
-  - 风格：输出长度 423 → 769 字符（+82%），代码长度 237 → 204 → **确认风格被显著改变，附加内容在代码之后**。
-- **2026-10-27 晚（第二轮：审查器）**：
-  - 排查发现 `mlx_lm.generate` 传字符串不套 chat template，且一直在用的 `MiniCPM5-2B-MLX` 是 **Base 版**；改用官方 `MiniCPM5-2B-SFT`（转 MLX 4bit，1.3GB）作基座。
-  - 构造审查数据：72 种子 × 60+ 变异，177 训练 / 16 验证 / 64 测试，三个 split 函数零重叠。
-  - 基线：严格召回 26.5%、误报率 56.2%、报出/实际 1.51（乱报）。
-  - 训练 300 步后：**严格召回 76.5%（+50 pp）、误报率 31.2%（−25 pp）、完全报对 66.7%（4 倍）、报出/实际 0.99**。
-  - 反直觉：**val loss 最低的 50 步 checkpoint 反而更差**（欠报，只敢报六成）——再次证明 val loss 不是能力指标。
-- **2026-10-28 晨（第三轮：HumanEval 基准 + 审查器调优）**：
-  - HumanEval 164 题：**Base 14.6% vs SFT 72.6%（+58 pp）**；best-of-3 后 SFT 达 **82.9%**。
-  - **重大修正**：手写 31 题严重高估 Base 版（测出 67.7%，真实仅 14.6%）——HumanEval 的「续写函数体」形式 Base 模型根本不擅长，而手写题只需吐一个完整函数。
-  - 审查器 v3（500 步）：误报率 31.2% → **18.8%**，精确率 77.6% → **88.2%**，代价是召回 76.5% → 66.2%。
-  - **证伪一个假设**：提高负样本比例（25%→40%）**不能**降低误报（v2 误报仍为 31.2%），真正起作用的是多训几个 epoch。
-  - 总结论：**换基座（+58 pp）>> best-of-3（+10 pp）>> 微调（±3 pp，噪声内）**。
-  - 追加 v4（负样本 25% + 500 步）：误报再降到 **6.2%**、召回 55.9% → **确认步数是主导因素**，负样本比例作用很小。
-  - 追加 v5（空值增强：补 15 个带守卫种子，空值占比 6%→15%）：精确率 75.4%、F1 68.8%，**不如 v3**。
-    - 但测试集空值 bug 仅 4 个（6%），**该测试集无力衡量空值类改进**，此结论证据不足，需专用测试集复验。
-  - **当前最佳审查器：v3**（F1 75.6%，误报 18.8%，精确率 88.2%）。
-- **2026-10-31（第四轮：空值专项评测 + 闭环验证）**：
-  - 造空值专用测试集（26 个空值 bug + 17 条干净代码，全用未训练过的新函数），**推翻上一轮结论**：
-    v5（空值增强）召回 **23.1%**、v3 仅 7.7%（**3 倍差距**），且 v5 **零误报**——空值增强确实有效。
-    上一轮在主测试集判"v5 不如 v3"是因为空值样本仅 4 个，**属误判**。
-  - **方法论教训（第二次踩到）**：验证"某类能力是否变强"必须配该类专属测试集，否则整体指标会掩盖改进。
-  - **首次闭环跑通**（执行器生成 → 测试判定 → 审查器审查，HumanEval 164 题）：生成通过率 72.6%，
-    审查器报警组失败率 37.5% vs 未报警组 25.7%，**lift 仅 1.46x**——信号为正但很弱。
-  - 结论：**合成数据训出的审查能力迁移不到真实生成代码上**。下一步应改用"真实生成的错误代码"作训练数据。
-  - **补上修复环节，并设 A/B 对照**（带审查意见重写 vs 不给意见盲重写，各 9 题）：
-    两组都只修好 1 题（11.1%），**审查意见净价值 +0**，通过率 72.6% → 73.2%。
-  - 根因：这些题模型**根本不会做**（重写成功率仅 11.1%），审查-修复只对"会做但写错"有效。
-  - **框架核心机制（验证层驱动改进）不成立**——当驱动信号是「审查器意见」时。
-  - **新增「反思环」（总结算法 → 对照要求 → 给出建议，无需任何训练），三组对照证明有效**：
-    盲重写 4/45（8.9%）/ 审查器意见 1/9（11.1%）/ **反思建议 11/45（24.4%，2.7 倍）**；
-    其中 7 题「只有反思能修好」，McNemar 精确检验 **p≈0.016（显著）**。
-    闭环通过率 **72.6% → 79.3%**（+6.7 pp），逼近 best-of-3 的 82.9%，且两者原理不同——**互补性已由 3f 的叠加实验证实，叠加后达 86.6%**。
-  - 有效的原因：它抓的是「概念理解偏了」（如把非严格单调写成严格单调）。这类错误不抛异常、
-    代码也无瑕疵，报错只描述症状、审查器根本抓不到，唯有对照需求才能发现。
-  - **该环节零训练成本**（基座模型直接可用），是全项目投入产出比最高的一步。
+- **2026-10-27 03:07**: 1,000-step training completed normally, val loss 0.628 → 0.351.
+- **2026-10-27 morning (8-task run)**: 75% → 62.5%; briefly judged "negative return".
+- **2026-10-27 morning (31-task greedy)**: 67.7% → 71.0%; direction flipped; corrected to "indistinguishable from zero".
+- **2026-10-27 (31 × 3 fine test)**: 66.7% → 63.4%; third direction change.
+  - Capability: 10 up / 11 down, 3-for-3 counts 11 vs 11 → **confirmed: no significant capability difference**.
+  - Style: output length 423 → 769 chars (+82%), code length 237 → 204 → **confirmed: style significantly changed, extra content comes after the code**.
+- **2026-10-27 evening (Round 2: reviewer)**:
+  - Found `mlx_lm.generate` doesn't apply chat templates to raw strings, and that `MiniCPM5-2B-MLX` is the **Base version**; switched to official `MiniCPM5-2B-SFT` (converted to MLX 4-bit, 1.3 GB).
+  - Built review data: 72 seeds × 60+ mutations, 177/16/64 splits with zero function overlap.
+  - Baseline: strict recall 26.5%, FPR 56.2%, reported/actual 1.51 (spamming).
+  - After 300 steps: **strict recall 76.5% (+50 pp), FPR 31.2% (−25 pp), exactly-correct 66.7% (×4), reported/actual 0.99**.
+  - Counter-intuitive: **the lowest-val-loss checkpoint (step 50) was worse** (under-reporting, only flags 60%) — again, val loss is not a capability metric.
+- **2026-10-28 morning (Round 3: HumanEval + reviewer tuning)**:
+  - HumanEval 164 tasks: **Base 14.6% vs SFT 72.6% (+58 pp)**; best-of-3 brings SFT to **82.9%**.
+  - **Major correction**: the 31 homemade tasks badly overestimated Base (67.7% measured vs 14.6% true) — HumanEval's "continue the function body" format defeats Base, while homemade "write a function" tasks just need one complete function.
+  - Reviewer v3 (500 steps): FPR 31.2% → **18.8%**, precision 77.6% → **88.2%**, at the cost of recall 76.5% → 66.2%.
+  - **Hypothesis falsified**: raising the negative-sample ratio (25%→40%) does **not** reduce false positives (v2 FPR still 31.2%); what works is training more epochs.
+  - Overall: **swap the base (+58 pp) >> best-of-3 (+10 pp) >> fine-tuning (±3 pp, noise)**.
+  - Added v4 (25% negatives + 500 steps): FPR down to **6.2%**, recall 55.9% → **confirms steps are the dominant factor**; negative ratio barely matters.
+  - Added v5 (null augmentation: +15 guarded seeds, null share 6%→15%): precision 75.4%, F1 68.8% — **worse than v3**.
+    - But the test set had only 4 null bugs (6%); **it has no power to measure null-specific improvements** — needs a dedicated test set.
+  - **Current best reviewer: v3** (F1 75.6%, FPR 18.8%, precision 88.2%).
+- **2026-10-31 (Round 4: null-specific eval + closed-loop verification)**:
+  - Built a null-specific test set (26 null bugs + 17 clean functions, all unseen functions) and **overturned the previous conclusion**:
+    v5 (null-augmented) recall **23.1%** vs v3's 7.7% (**3× gap**), with v5 at **zero false positives** — null augmentation works.
+    Round 3's "v5 worse than v3" was a misjudgment caused by only 4 null samples in the main set.
+  - **Methodological lesson (hit twice now)**: verifying "did capability X improve" requires a test set dedicated to X; otherwise aggregate metrics hide the improvement.
+  - **First full closed loop** (executor generates → tests judge → reviewer reviews; HumanEval 164): generation pass rate 72.6%;
+    flagged tasks fail at 37.5% vs 25.7% for unflagged — **lift only 1.46×** — positive but weak signal.
+  - Conclusion: **reviewing skill trained on synthetic data does not transfer to real generated code.** Next step: train on "real generated wrong code".
+  - **Added the repair stage with an A/B control** (rewrite with reviewer advice vs blind rewrite with no advice, 9 tasks each):
+    both fixed exactly 1 task (11.1%) — **reviewer advice net value +0**; pass rate 72.6% → 73.2%.
+  - Root cause: the model **cannot do these tasks at all** (rewrite success 11.1%); review-and-repair only helps "can do but wrote it wrong".
+  - **The framework's core mechanism (verification-layer-driven improvement) fails when the driving signal is reviewer advice.**
+  - **Added the "reflection loop" (summarize the algorithm → compare against the requirement → give advice; zero training), proven effective in a three-arm controlled trial**:
+    blind rewrite 4/45 (8.9%) / reviewer advice 1/9 (11.1%) / **reflection advice 11/45 (24.4%, 2.7×)**;
+    7 of the 11 were "fixed only by reflection"; McNemar exact test **p≈0.016 (significant)**.
+    Loop pass rate **72.6% → 79.3%** (+6.7 pp), approaching best-of-3's 82.9% — and the mechanisms differ, so they **compose: 3f's stacked experiment reached 86.6%**.
+  - Why it works: it catches **conceptual misunderstanding** (e.g. implementing strict monotonicity where non-strict was asked). Such errors raise no exception and leave no code smell; only comparing behavior against the requirement can find them.
+  - **Zero training cost** (base model as-is) — the highest ROI step in the whole project.
 
 ---
 
-# 今晚挂机任务（2026-10-27 夜）
+# The overnight run (night of 2026-10-27)
 
-预算 5 小时，实际约 2.5 小时——HumanEval 164 题实测只要约 8 分钟，远快于预期。
+Budget 5 hours; actual ~2.5 hours — HumanEval's 164 tasks take ~8 minutes, far faster than expected.
 
-| # | 任务 | 目的 |
+| # | Task | Purpose |
 |---|---|---|
-| 1 | HumanEval 164 题：SFT 版（套模板） | 确认执行器的**真实绝对水平** |
-| 2 | HumanEval 164 题：Base 版（裸续写） | 对照，量化"换 SFT 基座"到底赚了多少 |
-| 3 | 审查器 v2：负样本 25%→40%，300 步 | **压误报**（31.2% → 目标 <20%） |
-| 4 | 审查器 v3：同数据 500 步 | 验证更多 epoch 是否继续变好 |
-| 5 | HumanEval best-of-3：SFT | 验证「多采样 + 测试筛选」的增量 |
-| 6 | HumanEval best-of-3：Base | 对照 |
+| 1 | HumanEval 164: SFT (templated) | The executor's **true absolute level** |
+| 2 | HumanEval 164: Base (raw continuation) | Control: how much does swapping to SFT buy? |
+| 3 | Reviewer v2: negatives 25%→40%, 300 steps | **Push FPR down** (31.2% → target <20%) |
+| 4 | Reviewer v3: same data, 500 steps | Do more epochs keep helping? |
+| 5 | HumanEval best-of-3: SFT | The increment of "sample more + filter" |
+| 6 | HumanEval best-of-3: Base | Control |
 
-排序原则：**快且关键的先跑**，万一中断也先拿到核心数字。
+Ordering: **fast and critical first** — if interrupted, the core numbers are already in.
 
-日志：`/Volumes/LLM/logs/night.log`
+Log: `/Volumes/LLM/logs/night.log`
 
-## 结果
+## Results
 
-### 1. HumanEval：Base 版真实水平只有 14.6%
+### 1. HumanEval: Base's true level is only 14.6%
 
-| | HumanEval 164 题 | 手写 31 题 |
+| | HumanEval 164 | Homemade 31 |
 |---|---|---|
-| Base 版（裸续写） | **14.6%** (24/164) | 67.7% |
-| SFT 版（套模板） | **72.6%** (119/164) | 90.3% |
-| 差距 | **+58 pp** | +22.7 pp |
+| Base (raw continuation) | **14.6%** (24/164) | 67.7% |
+| SFT (templated) | **72.6%** (119/164) | 90.3% |
+| Gap | **+58 pp** | +22.7 pp |
 
-**手写题严重高估了 Base 版。** 原因：手写题的 prompt 是「Write a function that...」，模型吐一个完整函数即可交差；而 HumanEval 给的是**函数签名 + docstring，要求续写函数体**，Base 模型不知道该在哪停，续写着就跑偏。
+**The homemade tasks massively overestimated Base.** Why: their prompt is "Write a function that..." — producing one complete function suffices. HumanEval gives a **signature + docstring and asks to continue the body**; Base doesn't know where to stop and drifts.
 
-> **方法论教训**：评估基准的 prompt 形式会极大左右结论。用「指令式 + 短函数」的自造题衡量编码能力，会系统性高估那些不会遵循指令的模型。**前两轮关于执行器的所有判断，都建立在一把偏软的尺子上。**
+> **Methodological lesson**: the prompt format of a benchmark can swing conclusions wildly. Measuring coding ability with "instruction-style + short function" tasks systematically overestimates models that can't follow instructions. **Every executor judgment from the first two rounds rested on a too-soft yardstick.**
 
-### 2. best-of-3 依然有效，但增益随基线升高而缩水
+### 2. best-of-3 still works, but gains shrink as the baseline rises
 
-| | 单次 | best-of-3 | 增量 |
+| | Single | best-of-3 | Gain |
 |---|---|---|---|
 | SFT | 72.6% | **82.9%** (136/164) | +10.3 pp |
 | Base | 14.6% | 34.8% (57/164) | +20.2 pp |
 
-基线越高，多采样的边际收益越小（+20 → +10 pp），符合预期。82.9% 是**零训练成本**拿到的强数字。
+The higher the baseline, the smaller the marginal return of more sampling (+20 → +10 pp), as expected. 82.9% is a strong number at **zero training cost**.
 
-### 3. 审查器：压住误报的代价是召回
+### 3. Reviewer: buying precision costs recall
 
-| 版本 | 召回 | 精确率 | F1 | 误报率 |
+| Version | Recall | Precision | F1 | FPR |
 |---|---|---|---|---|
-| v1（负样本 25%，300 步） | **76.5%** | 77.6% | **77.0%** | 31.2% |
-| v2（负样本 40%，300 步） | 63.2% | 79.6% | 70.5% | 31.2% |
-| **v3（负样本 40%，500 步）** | 66.2% | 88.2% | 75.6% | 18.8% |
-| v4（负样本 25%，500 步） | 55.9% | **88.4%** | 68.5% | **6.2%** |
-| v5（空值增强，500 步） | 63.2% | 75.4% | 68.8% | 12.5% |
+| v1 (25% negatives, 300 steps) | **76.5%** | 77.6% | **77.0%** | 31.2% |
+| v2 (40% negatives, 300 steps) | 63.2% | 79.6% | 70.5% | 31.2% |
+| **v3 (40% negatives, 500 steps)** | 66.2% | 88.2% | 75.6% | 18.8% |
+| v4 (25% negatives, 500 steps) | 55.9% | **88.4%** | 68.5% | **6.2%** |
+| v5 (null-augmented, 500 steps) | 63.2% | 75.4% | 68.8% | 12.5% |
 
-**因素拆解（v4 是关键的一格）**：把 v1 的负样本比例配上 v3 的 500 步就是 v4——召回进一步降到 55.9%，误报也进一步降到 6.2%。至此可以确认：
+**Factor decomposition (v4 is the key cell)**: v1's negative ratio + v3's 500 steps = v4 — recall falls further to 55.9%, FPR further to 6.2%. Now confirmed:
 
-- **步数是主导因素**：300→500 步让模型明显变保守，误报单调下降（31.2% → 18.8% / 6.2%），召回同向下降。
-- **提高负样本比例无效（假设被证伪）**：v2 把负样本 25%→40%，误报纹丝不动（31.2%），召回反掉 13 pp。
+- **Steps are the dominant factor**: 300→500 makes the model noticeably more conservative; FPR falls monotonically (31.2% → 18.8% / 6.2%), recall falls along with it.
+- **Raising the negative ratio doesn't work (hypothesis falsified)**: v2 moved negatives 25%→40%; FPR didn't budge (31.2%) while recall dropped 13 pp.
 
-v1 与 v3 是典型取舍：**v1 抓得多但爱瞎报，v3 报得准但会漏**。F1 上 v1 最高（77.0%），但审查器一旦频繁误报，用户很快就不信它了——**综合精确率与可信度，仍选 v3**。
+v1 and v3 are the classic trade-off: **v1 catches more but spams; v3 is precise but misses**. On F1, v1 wins (77.0%) — but a reviewer that cries wolf loses the user's trust quickly. **Balancing precision and credibility, v3 stays.**
 
-### 3b. 空值增强：专用测试集证明有效，v5 在空值类上完胜
+### 3b. Null augmentation: validated by a dedicated test set — v5 dominates on nulls
 
-「空值处理」类 bug 原先只占训练集 **6%**——根因是 **71 个种子总共只有 7 处守卫**可删，而空值 bug 只能靠删除已有守卫来制造。为此补了 15 个**带空值守卫的新种子** + 13 个配套变异，把空值占比拉到 **15%**（34/219）。
+"Null handling" bugs were only **6%** of the training set — root cause: across 71 seeds there were only **7 guards to delete**, and null bugs can only be created by removing existing guards. We added 15 **new seeds with null guards** + 13 matching mutations, raising the null share to **15%** (34/219).
 
-**第一版结论是错的。** 在主测试集上 v5 的 F1 是 68.8%、不如 v3 的 75.6%，当时据此判断"空值增强无效"。但那份测试集里空值类 bug 只有 **4 个**（占 6%），就算全部抓对也只影响 6 个百分点——**它根本没有能力衡量空值类的变化**。
+**The first conclusion was wrong.** On the main test set v5's F1 was 68.8%, below v3's 75.6%, and we judged "null augmentation doesn't work". But that set had only **4** null bugs (6%) — even catching all of them moves the total by 6 points. **It simply cannot measure null-specific changes.**
 
-于是造了一个空值专用测试集（`scripts/make_null_test.py`）：**26 个空值 bug**（20 个删掉守卫 + 6 个把 `None` 判断改写成等价性判断）+ 17 条干净代码，全部使用**从未出现在任何训练集里的新函数**。
+So we built a null-specific test set (`scripts/make_null_test.py`): **26 null bugs** (20 guards deleted + 6 `None` checks rewritten into equivalence checks) + 17 clean functions, all using **functions never seen in any training set**.
 
-| 版本 | 严格召回 | 宽松召回 | 误报率 |
+| Version | Strict recall | Loose recall | FPR |
 |---|---|---|---|
-| 基线（未微调） | 0.0% | 57.7% | 76.5% |
-| v1（负样本 25% / 300 步） | 7.7% | 26.9% | 29.4% |
-| v2（负样本 40% / 300 步） | 3.8% | 23.1% | 11.8% |
-| v3（负样本 40% / 500 步） | 7.7% | 11.5% | 11.8% |
-| v4（负样本 25% / 500 步） | 3.8% | 3.8% | 5.9% |
-| **v5（空值增强 / 500 步）** | **23.1%** | 23.1% | **0.0%** |
+| Baseline (no FT) | 0.0% | 57.7% | 76.5% |
+| v1 (25% / 300 steps) | 7.7% | 26.9% | 29.4% |
+| v2 (40% / 300 steps) | 3.8% | 23.1% | 11.8% |
+| v3 (40% / 500 steps) | 7.7% | 11.5% | 11.8% |
+| v4 (25% / 500 steps) | 3.8% | 3.8% | 5.9% |
+| **v5 (null-augmented / 500 steps)** | **23.1%** | 23.1% | **0.0%** |
 
-**v5 的召回是 v3 的 3 倍，且 17 条干净代码零误报。** 空值增强确实有效——上一轮"v5 不如 v3"是测试集样本不足造成的误判。
+**v5's recall is 3× v3's, with zero false positives on the 17 clean functions.** Null augmentation does work — the earlier "v5 worse than v3" was an artifact of an underpowered test set.
 
-> **方法论教训（第二次踩到同类问题）**：当某类样本在测试集中占比过低时，整体指标会系统性掩盖针对该类所做的改进。**要验证"某类能力变强了没有"，必须有一份该类专属的测试集**，否则看到的只是其他类别的波动噪声。这与第一轮"手写题高估 Base 版"是同一类错误——**尺子不对，结论就不可靠**。
+> **Methodological lesson (second time hitting this)**: when a category is a tiny share of the test set, aggregate metrics systematically hide category-targeted improvements. **To verify "did category-X ability improve", you need a category-X test set** — otherwise you're watching other categories' noise. Same error family as "homemade tasks overestimate Base": **wrong yardstick, unreliable conclusion**.
 
-**但绝对水平仍然很低**：最好的 v5 在空值类上也只有 23.1% 召回，远低于它在逻辑/边界类上的 60%+。空值处理仍是明显短板（训练样本 34 条仍太少）。
+**But the absolute level is still low**: even v5 catches only 23.1% of null bugs, far below its 60%+ on logic/boundary classes. Null handling remains a clear weakness (34 training samples is still too few).
 
-注：基线（未微调）宽松召回 57.7% 配合 76.5% 误报率，仍是"看到代码就报问题"的瞎报模式。
+Note: baseline loose recall 57.7% with 76.5% FPR is still the "flag everything" mode.
 
-### 3c. 闭环验证：审查器在真实生成代码上只有弱信号
+### 3c. Closed-loop verification: weak signal on real generated code
 
-三个零件（执行器、审查器、测试）都齐了，第一次端到端跑通（`scripts/run_pipeline.py`）：
-SFT 执行器生成 HumanEval 164 题的答案 → 测试判定对错 → 审查器 v3 审查每一份**真实生成的代码**。
+All three parts exist (executor, reviewer, tests) — time for the first end-to-end run (`scripts/run_pipeline.py`):
+the SFT executor answers HumanEval's 164 tasks → tests judge them → reviewer v3 reviews every piece of **really generated code**.
 
-要回答的不是"审查器在合成数据上多准"，而是更硬的问题：**它报警的那些题，是不是真的更容易错？**
+The question is not "how accurate is the reviewer on synthetic data" but the harder one: **are the flagged tasks actually more likely to be wrong?**
 
-| 指标 | 数值 |
+| Metric | Value |
 |---|---|
-| 生成通过率 | 119/164 = 72.6%（与单独测试一致，可互相印证） |
-| 审查器报警的题目 | 24/164 = 14.6% |
-| 报警组里真失败的比例 | **9/24 = 37.5%** |
-| 未报警组里真失败的比例 | 36/140 = 25.7% |
-| 整体失败率基线 | 45/164 = 27.4% |
-| **提升度 lift** | **1.46x** |
+| Generation pass rate | 119/164 = 72.6% (matches the standalone measurement — mutual validation) |
+| Tasks flagged by the reviewer | 24/164 = 14.6% |
+| True failure rate among flagged | **9/24 = 37.5%** |
+| True failure rate among unflagged | 36/140 = 25.7% |
+| Overall failure baseline | 45/164 = 27.4% |
+| **Lift** | **1.46×** |
 
-**信号为正，但很弱。** 报警组的失败率确实更高（37.5% vs 25.7%），说明审查器不是在抛硬币；但 1.46x 远达不到可用阈值——报警的题里仍有 62.5% 其实是通过的（误报），没报警的题里还有 25.7% 是错的（漏报）。
+**The signal is positive but weak.** Flagged tasks do fail more (37.5% vs 25.7%) — the reviewer isn't flipping coins. But 1.46× is far from usable: 62.5% of flagged tasks actually pass (false alarms), and 25.7% of unflagged ones are wrong (misses).
 
-**根因：训练分布与真实分布严重错位。** 审查器学的是"小函数里被人为注入的简单 bug"（删一个守卫、改一个边界），而真实失败是"算法根本没做对"（没理解题目、思路错了）。前者是局部瑕疵，后者是整体错误，模型学到的表面模式迁移不过去。
+**Root cause: training distribution badly misaligned with reality.** The reviewer learned "simple injected bugs in small functions" (delete a guard, off-by-one a boundary); real failures are "the algorithm is simply wrong" (misread the task, wrong approach). The former is a local flaw, the latter a global error — the surface patterns don't transfer.
 
-**结论：合成数据上的高指标（F1 75%）不能代表真实场景的能力。** 要让审查器真正能做筛选，训练数据必须是**真实生成的错误代码**，而不是"干净代码注入的假 bug"。这是下一步最值得投入的方向。
+**Conclusion: high synthetic metrics (F1 75%) say nothing about real-world capability.** For the reviewer to filter for real, training data must be **really generated wrong code**, not "clean code with injected fake bugs". That's the next high-value direction.
 
-### 3d. 修复环节：审查意见的净价值为 0（决定性证据）
+### 3d. Repair stage: the net value of reviewer advice is 0 (decisive evidence)
 
-补上了架构缺失的最后一环——**按审查意见重写失败代码**（`run_pipeline.py` 阶段 3）。对每道「测试失败 且 审查器报警」的题做两组修复：
+We added the architecture's missing last link — **rewriting failed code per reviewer advice** (`run_pipeline.py`, stage 3). For every task that both **failed tests and was flagged**, two repairs were run:
 
-- **A 组**：把审查意见一起喂给执行器，让它按意见重写
-- **B 组**：完全相同的重写请求，**但不给任何审查意见**（对照组）
+- **Group A**: feed the reviewer's advice to the executor and have it rewrite accordingly
+- **Group B**: the exact same rewrite request, **with no advice at all** (control)
 
-对照组必不可少，用来排除"单纯重写一次碰巧就对了"这个混淆项。
+The control exists to rule out the confounder "a second attempt just happens to pass".
 
-| 指标 | 结果 |
+| Metric | Result |
 |---|---|
-| 可修复样本（失败且报警） | 9 题 |
-| A 组 带审查意见修好 | 1/9 = 11.1% |
-| B 组 不给意见盲重写修好 | 1/9 = 11.1% |
-| **审查意见的净价值** | **+0 题** |
-| 框架最终通过率 | 120/164 = 73.2%（修复前 72.6%） |
+| Repairable samples (failed and flagged) | 9 tasks |
+| Group A, with advice | 1/9 = 11.1% |
+| Group B, blind rewrite | 1/9 = 11.1% |
+| **Net value of reviewer advice** | **+0 tasks** |
+| Framework pass rate | 120/164 = 73.2% (from 72.6%) |
 
-**A 组与 B 组一模一样。** 修好的那 1 题来自"重写一次碰巧对了"，与审查意见无关。
+**Groups A and B are identical.** The one fix came from "a second try happened to work", not from the advice.
 
-**根因不是审查器不准，而是失败的性质不对。** 重写成功率只有 11.1%（无论给不给意见），说明这些题模型**根本不会做**——缺的是解法本身，不是代码里的瑕疵。审查-修复范式只对"会做但写错了小地方"有效，对"压根不会"的题，给再多意见也没用。
+**The root cause is not reviewer inaccuracy — it's the nature of the failures.** With rewrite success at 11.1% regardless of advice, the model **cannot do these tasks at all** — what's missing is the solution itself, not a flaw in the code. The review-and-repair paradigm only helps "can do but wrote it slightly wrong"; for "can't do it at all", no amount of advice helps.
 
-> **结论：框架的核心机制（验证层驱动改进）在当前设定下不成立。** 合成数据训出的审查器既不能有效筛选（lift 1.46x），也不能指导修复（净价值 +0）。
+> **Conclusion: the framework's core mechanism (verification-layer-driven improvement) does not hold in this configuration.** The synthetic-data reviewer neither filters effectively (lift 1.46×) nor guides repair (net value +0).
 >
-> 若要在真实场景发挥作用，训练数据必须同时满足两个条件：**是真实产生的错误**，且**聚焦"会做但写错"的那类问题**——而不是"不会做"的题。
+> To matter in the real world, training data must satisfy two conditions: **the errors are real**, and **they concentrate on "can do but wrote wrong"** — not "can't do at all".
 
-### 3e. 新增「反思环」：对照组证明它真的有用
+### 3e. The reflection loop: a controlled trial proves it works
 
-既然让模型"猜哪里像有 bug"这条路走不通（3d），那就换个思路——不猜，而是先**说清这段代码实际在做什么**，再**对照任务要求**找出不满足的地方，最后给出修改建议。这一步不需要训练，基座模型本身就有这个能力。
+Since "guess where the bug is" is a dead end (3d), change the approach — don't guess. First **state what the code actually does**, then **compare against the task requirement** to find where it falls short, and only then give a fix. This needs no training; the base model can do it as-is.
 
-在三组严格对照下运行（`run_pipeline.py` 阶段 2.5 + 阶段 3）。注意修复范围已从"审查器报警的 9 题"扩大到**全部 45 道失败题**——审查器既已证伪，再拿它当门禁只会把样本砍到没有统计意义。
+Run under three strict arms (`run_pipeline.py` stages 2.5 + 3). Note the repair scope widened from "the 9 flagged tasks" to **all 45 failures** — with the reviewer falsified, using it as a gate would shrink the sample below statistical meaning.
 
-| 组 | 做法 | 修好 | 成功率 |
+| Arm | Method | Fixed | Success rate |
 |---|---|---|---|
-| A（基线） | 什么都不给，纯粹重写一次 | 4/45 | 8.9% |
-| B | 带微调审查器的意见 | 1/9 | 11.1%（只有 9 题被报警） |
-| **C** | **带反思建议（总结算法 / 对照要求 / 给出建议）** | **11/45** | **24.4%** |
+| A (baseline) | Nothing given; pure rewrite | 4/45 | 8.9% |
+| B | With fine-tuned reviewer advice | 1/9 | 11.1% (only 9 flagged) |
+| **C** | **With reflection advice (summarize algorithm / compare requirement / suggest)** | **11/45** | **24.4%** |
 
-**C 组是 A 组的 2.7 倍，净价值 +7 题，闭环整体通过率 72.6% → 79.3%（+6.7 pp）。**
+**Arm C is 2.7× arm A; net value +7 tasks; overall pass rate 72.6% → 79.3% (+6.7 pp).**
 
-更关键的是把 11 题拆开看：其中 **7 题是"只有反思能修好"**（盲重写同样失败），其余 4 题两组都能修好，属于重写碰巧撞对。配对检验 McNemar 精确检验得 **p ≈ 0.016**，差异统计显著，不是运气。
+Crucially, of the 11 fixed tasks, **7 were "fixed only by reflection"** (blind rewrite failed on them too); the other 4 both arms fixed — luck. McNemar exact test: **p ≈ 0.016** — statistically significant, not luck.
 
-**它为什么有效——一个真实案例**（HumanEval/57，判断列表是否单调）：
+**Why it works — a real case** (HumanEval/57, list monotonicity):
 
-反思输出准确指出：代码用的是 `l[i] < l[i+1]`，这是**严格单调**；而题目要求的是允许相邻元素相等的**非严格单调**，所以 `[1, 2, 2, 4]` 会被误判为 False。建议改成 `<=`。
+The reflection output correctly pointed out: the code uses `l[i] < l[i+1]`, which is **strict** monotonicity; the task asks for **non-strict** (equal neighbors allowed), so `[1, 2, 2, 4]` would be wrongly rejected. Suggested changing `<` to `<=`.
 
-这属于"**概念理解偏了**"——它不抛异常（测试只会报 AssertionError），代码本身也看不出毛病（所以审查器发现不了）。唯一能抓住它的方式，就是拿代码的实际行为去对照需求本身。这正是这一环在做的事。
+This is a **conceptual misunderstanding** — it raises no exception (tests just report AssertionError), and the code itself looks flawless (so no reviewer can catch it). The only way to catch it is to compare the code's actual behavior against the requirement itself. That is precisely what this stage does.
 
-> **结论：驱动修复的关键，不在给多少信息，而在信息是否指向真正的病因。**
+> **Conclusion: what drives repair is not how much information you give, but whether it points at the true cause.**
 >
-> - 运行报错说"期望 3 得到 5"——只描述症状，不说病因
-> - 审查器猜"这行可能有问题"——连症状都对不准（净价值 +0）
-> - **反思对照要求找出"把非严格单调理解成了严格单调"——对准了病因**
+> - A runtime error says "expected 3, got 5" — describes the symptom, not the cause.
+> - A reviewer guesses "this line looks suspicious" — doesn't even pin the symptom (net value +0).
+> - **Reflection compares against the requirement and finds "strict where non-strict was meant" — it hits the cause.**
 >
-> 而且这一环**不需要任何微调**，基座模型直接可用，边际成本只是多一次推理。这是整个项目里投入产出比最高的一步。
+> And this stage **needs no fine-tuning at all** — the base model as-is, marginal cost one extra inference. The highest-ROI step in the project.
 
-### 3f. 叠加 best-of-3 与反思环：两者确实互补，最终 86.6%
+### 3f. Stacking best-of-3 and reflection: genuinely complementary — 86.6%
 
-反思环不依赖报错、best-of-3 依赖测试筛选，两者原理不同，理论上应当可以叠加：**先用 best-of-3 把"采样运气不好"的题挑走，再对仍然失败的题做反思修复**。为此给生成器加了 best-of-N 支持（`--repeat`，刻意不早停，第 2 次起改用 `temperature=0.8` 采样，以便与已知基线严格对齐）。
+The reflection loop needs no errors; best-of-3 needs test filtering. Different mechanisms, so they should stack: **use best-of-3 to pick off "unlucky sampling" tasks, then reflect on the rest**. The generator gained best-of-N support (`--repeat`; deliberately no early stop; samples 2 and 3 use `temperature=0.8` to align strictly with known baselines).
 
-HumanEval 164 题实测（四阶段合计约 50 分钟）：
+Measured on HumanEval's 164 tasks (all four stages ~50 minutes):
 
-| 阶段 | 结果 |
+| Stage | Result |
 |---|---|
-| 阶段 1 生成（best-of-3） | 136/164 = **82.9%**（完整复现单独测试的基线） |
-| 仍未通过的题 | 28 道 |
-| A 组 盲重写（基线） | 1/28 = **3.6%** |
-| B 组 带审查器意见 | 1/7 = 14.3%（仅 7 道被报警，样本过小，不足以下结论） |
-| **C 组 带反思建议** | **6/28 = 21.4%** |
-| 反思建议净价值 | **+5 题** |
-| **最终通过率** | **142/164 = 86.6%**（叠加前 82.9%，+3.7 pp） |
+| Stage 1 generation (best-of-3) | 136/164 = **82.9%** (fully reproduces the standalone baseline) |
+| Still failing | 28 tasks |
+| Arm A blind rewrite (baseline) | 1/28 = **3.6%** |
+| Arm B with reviewer advice | 1/7 = 14.3% (only 7 flagged; too small to conclude) |
+| **Arm C with reflection advice** | **6/28 = 21.4%** |
+| Reflection's net value | **+5 tasks** |
+| **Final pass rate** | **142/164 = 86.6%** (from 82.9%, +3.7 pp) |
 
-三条结论：
+Three conclusions:
 
-1. **两者确实互补。** best-of-3 捡走"本来能做对、只是采样没撞上"的题，反思环攻"把需求理解偏了"的题。叠加后又多修好 5 题，82.9% → **86.6%**。这是目前框架的最强形态。
+1. **They really are complementary.** best-of-3 picks off "could do, unlucky sampling" tasks; reflection attacks "misunderstood the requirement". Five more fixed, 82.9% → **86.6%**. The framework's strongest configuration to date.
 
-2. **修复的边际难度明显上升，不能拿单点数据外推。** 对比两次实验：
+2. **Marginal repair difficulty rises — don't extrapolate single points.** Comparing the two experiments:
 
-   | | 单点生成后残留下的失败题 | best-of-3 后残留下的失败题 |
+   | | Failures after single-shot | Failures after best-of-3 |
    |---|---|---|
-   | 失败题数 | 45 | 28 |
-   | A 组 盲重写成功率 | 8.9% | **3.6%** |
-   | C 组 反思修复成功率 | 24.4% | **21.4%** |
+   | Failure count | 45 | 28 |
+   | Arm A blind rewrite success | 8.9% | **3.6%** |
+   | Arm C reflection success | 24.4% | **21.4%** |
 
-   best-of-3 已经把"重写一次碰巧能过"的简单题筛走了，留给反思的都是硬骨头，所以盲重写的成功率塌得最狠（8.9% → 3.6%），反思也从 24.4% 回落到 21.4%。**这与叠加前的预判一致**——当初判断"剩下的题更难、边际收益要打折"，实测确实如此。
+   best-of-3 already skimmed the "get lucky on a rewrite" easy tasks, leaving reflection only hard ones — hence blind rewrite collapsing hardest (8.9% → 3.6%) and reflection easing from 24.4% to 21.4%. **Exactly as predicted before stacking.**
 
-3. **审查器这一环依然无用。** 叠加场景下只剩 7 道题被报警、修好 1 道，样本已经小到没有统计意义；结合 3d 的结论，审查器不应留在框架里。
+3. **The reviewer remains useless.** In the stacked setting only 7 tasks got flagged and 1 was fixed — far below statistical meaning; combined with 3d, the reviewer should not stay in the framework.
 
-**当前框架的最强配置**（无需任何 LoRA）：
+**The framework's strongest configuration** (no LoRA anywhere):
 
 ```
-SFT 基座 + chat template
-  → best-of-3 采样 + 测试筛选          （72.6% → 82.9%）
-  → 对仍失败的题做反思（SGSR）+ 重写    （      → 86.6%）
+SFT base + chat template
+  → best-of-3 sampling + test filtering          (72.6% → 82.9%)
+  → reflection (SGSR) + rewrite on the rest       (        → 86.6%)
 ```
 
-执行器 LoRA（executor-v1）无效、审查器 LoRA（reviewer-v1~v5）在真实代码上迁移失败且修复净价值为 0，两者均可弃用。
+The executor LoRA (executor-v1) is useless; the reviewer LoRAs (reviewer-v1~v5) fail to transfer to real code with zero repair value. Both are retired.
 
-### 4. 本轮最重要的结论：换基座 >> 微调
+### 4. This round's most important conclusion: swap the base >> fine-tune
 
-| 手段 | 收益（HumanEval） |
+| Method | Gain (HumanEval) |
 |---|---|
-| **换 SFT 基座（Base → SFT）** | **+58 pp**（14.6% → 72.6%） |
-| best-of-3 + 测试筛选 | +10.3 pp（72.6% → 82.9%） |
-| 两轮 LoRA 微调（执行器） | ±3 pp，**全部落在噪声内** |
+| **Swap base (Base → SFT)** | **+58 pp** (14.6% → 72.6%) |
+| best-of-3 + test filtering | +10.3 pp (72.6% → 82.9%) |
+| Two rounds of LoRA (executor) | ±3 pp, **all within noise** |
 
-**执行器真正该做的不是微调，而是：换对基座 + 正确喂指令 + 多采样筛选。**
+**What the executor needed was never fine-tuning: the right base, correct prompting, more samples with filtering.**
 
-再叠加反思环（SGSR）去修复 best-of-3 之后仍然失败的题，可进一步从 82.9% 推到 **86.6%**（见 3f）——这两步都不需要训练，且已经是当前 2B 模型上的最强形态。
+Stack the reflection loop (SGSR) on top for tasks best-of-3 still misses, and 82.9% becomes **86.6%** (see 3f) — neither step requires training, and together they are the strongest configuration on this 2B model.
 
-前两轮花在微调上的十几个小时，收益远不如"换 SFT 基座"这一个动作。这也解释了一开始为什么会撞墙——我们对着一把偏软的尺子，去优化一个本来就不该优化的东西。
+The dozen hours spent on fine-tuning across two rounds returned less than the single act of swapping the base. That also explains the early walls: we were optimizing the wrong thing against a too-soft yardstick.
 
 ---
 
-## 九、产品化：Flux Spark CLI
+## 9. Productization: the Flux Spark CLI
 
-实验结论最终固化成命令行工具 `fluxspark.py`（纯 CLI，无 GUI），只依赖 SFT 基座，**不需要任何 LoRA**。
+The findings crystallized into `fluxspark.py` (pure CLI, no GUI). It needs only the SFT base — **no LoRA at all**.
 
-### 设计要点
+### Design points
 
-- **代码输出到 stdout，过程日志到 stderr**：可以直接重定向成 `.py` 文件。
-- **测试是可选增强**，三级降级：
-  1. 用户提供 `--tests` → 完整闭环（best-of-N 筛选 + 反思自纠 + 回归校验）
-  2. `--selftest` → 让模型先写测试（置信度降级，输出里明确标注）
-  3. 都不给 → 只做「生成 + 反思自纠」，无法确认真的改对了
-- **反思环（SGSR）不依赖任何测试**，输入只有「需求 + 代码」，所以任何模式都能跑。
-- **只接受变好的修改**：反思重写后必须通过测试才会替换，否则退回原版本（避免改坏）。
+- **Code to stdout, logs to stderr** — redirect straight into a `.py` file.
+- **Tests are an optional enhancement**, three-tier fallback:
+  1. `--tests` given → full loop (best-of-N filtering + reflection + regression check)
+  2. `--selftest` → the model writes its own tests first (reduced confidence, flagged in output)
+  3. Neither → "generate + reflect" only; no way to confirm the fix actually worked
+- **The reflection loop (SGSR) needs no tests** — inputs are just "requirement + code", so it runs in every mode.
+- **Only improvements are accepted**: a reflected rewrite must pass the tests to replace the original; otherwise the original is kept (never make it worse).
 
-### 用法
+### Usage
 
 ```bash
-# 最强模式：自带测试 + 采样 3 次 + 反思修复
-python3 fluxspark.py "写一个函数判断列表是否单调，允许相等" \
+# Strongest mode: tests + 3 samples + reflection repair
+python3 fluxspark.py "check if a list is monotonic (equal neighbors allowed)" \
   --tests 'assert f([1,2,2,4]); assert not f([1,3,2])' --n 3
 
-# 让模型自己写测试
+# Let the model write its own tests
 python3 fluxspark.py "..." --selftest
 
-# 存成文件（stdout 重定向，或 --out）
+# Save to file (stdout redirect, or --out)
 python3 fluxspark.py "..." --n 3 --tests '...' > out.py
 ```
 
-### 交互式终端
+### Interactive terminal
 
-除了一次一个问题，**也支持常驻的交互终端**：
-
-```bash
-python3 fluxspark.py -i
-```
-
-```
-[1] 需求> 写一个函数判断列表是否单调，允许相邻元素相等
-    测试(可选，直接回车跳过)> assert f([1,2,2,4]); assert not f([1,3,2])
-
-... 过程日志 ...
-
-def is_monotonic(lst):
-    ...
-
-[2] 需求> _
-```
-
-它的价值不只是「少打命令」，而是**模型只加载一次**：单次模式下每题都要重新把权重读进内存（约 20~30 秒），
-交互模式下第二题起只剩生成时间（约 10 秒）。连续问多个问题时体感差别很大。
-
-会话内可以随时改设置，不需要退出重来：
-
-| 命令 | 作用 |
-|---|---|
-| `/n 3` | 采样次数改为 3（best-of-N；需要给测试才能筛选） |
-| `/selftest` | 开关：没有测试时让模型自己先写测试 |
-| `/reflect` | 开关：反思自纠（默认开） |
-| `/quiet` | 开关：只输出代码，不打过程日志 |
-| `/save 文件名` | 把上一题的代码存下来 |
-| `/help` | 命令一览 |
-| `/quit` `Ctrl+D` | 退出（`Ctrl+C` 只中断当前生成，会话继续） |
-
-### 交互式终端
-
-除了一次一个问题，也支持常驻的交互终端：
+Beyond one-shot questions, there's a **persistent interactive terminal**:
 
 ```bash
-python3 fluxspark.py -i        # 显式进入
-python3 fluxspark.py           # 不给需求参数时，自动进入
+python3 fluxspark.py -i        # explicit
+python3 fluxspark.py           # auto-enters when no requirement argument is given
 ```
 
 ```
 ========================================================
- Flux Spark    交互式终端
+ Flux Spark    Interactive Terminal
 --------------------------------------------------------
- 模型：MiniCPM5-2B-SFT-MLX-4bit
- 当前：采样 1 次 | 自动生成测试 关 | 反思自纠 开 | 安静 关
+ Model: MiniCPM5-2B-SFT-MLX-4bit
+ Now: samples 1 | self-tests off | reflection on | quiet off
 --------------------------------------------------------
- 输入自然语言需求，回车开始。
- /help 看命令，/quit 退出，Ctrl+D 也能退出。
+ Type a natural-language requirement and press Enter.
+ /help for commands, /quit to exit, Ctrl+D also quits.
 ========================================================
 
-[1] 需求> 写一个函数判断列表是否单调，允许相邻元素相等
-    测试(可选，直接回车跳过)> assert f([1,2,2,4]); assert not f([1,3,2])
+[1] requirement> write a function that checks if a list is monotonic (equal neighbors allowed)
+    tests (optional, Enter to skip)> assert f([1,2,2,4]); assert not f([1,3,2])
 ```
 
-**它真正的价值是「模型只加载一次」。** 单次模式下每问一题都要把权重重新读进内存（每次约 20~30 秒），
-交互模式这部分只付一次，之后每题只剩十几秒的生成时间——连问几个问题时差别非常明显。
+**Its real value is "the model loads once".** In one-shot mode, every question re-reads the weights into memory (~20–30 s);
+in interactive mode you pay that once, then each question costs only generation (~10 s). Ask several questions in a row and the difference is dramatic.
 
-会话内可随时调设置，不必退出重来：
+Settings can change mid-session without restarting:
 
-| 命令 | 作用 |
+| Command | Effect |
 |---|---|
-| `/n 3` | 采样次数改为 3（best-of-N，需给测试才能筛选） |
-| `/selftest` | 开关：没测试时让模型自己先写测试 |
-| `/reflect` | 开关：反思自纠（默认开） |
-| `/quiet` | 开关：只输出代码，不打过程日志 |
-| `/save out.py` | 把上一题的代码存下来 |
-| `/help` | 命令一览 |
-| `/quit`、`Ctrl+D` | 退出（`Ctrl+C` 只中断当前生成，会话继续） |
+| `/n 3` | Set samples to 3 (best-of-N; needs tests to filter) |
+| `/selftest` | Toggle: model writes its own tests when none given |
+| `/reflect` | Toggle: reflection self-repair (default on) |
+| `/quiet` | Toggle: code only, no logs |
+| `/save out.py` | Save the last answer's code |
+| `/help` | Command list |
+| `/quit`, `Ctrl+D` | Exit (`Ctrl+C` aborts only the current generation) |
 
-已实测：连续答两题（含无测试的反思路径）、`/help` 调参、`/save` 落盘、`/quit` 退出，均正常。
+Verified live: two consecutive questions (including the no-test reflection path), `/help`, `/save` to disk, `/quit` — all working.
 
-### 实跑验证
+### Real-run verification
 
-| 需求 | 结果 |
+| Requirement | Result |
 |---|---|
-| 判断列表是否单调（允许相等） | 通过全部测试，13s，输出 `<=` / `>=` 的非严格单调实现 |
-| 计算列表中位数 | 通过全部测试，含偶数个取平均 |
-| **第二大元素（去重，不足两个返回 None）** | **首次生成失败 → 触发反思 → 修复后通过** |
-| 返回列表最大值（空列表返回 None） | 一次通过，`--out` 写出的文件干净可直接运行 |
-| 按单词反转字符串 | 一次通过，输出 `' '.join(reversed(s.split()))` |
+| List monotonicity (equal allowed) | Passes all tests, 13 s, non-strict `<=` / `>=` implementation |
+| Median of a list | Passes all tests, averaging for even lengths |
+| **Second-largest element (dedup; None if fewer than two)** | **First attempt failed → reflection triggered → fixed and passed** |
+| Max of a list (None for empty) | First try; `--out` file clean and runnable |
+| Reverse words in a string | First try; outputs `' '.join(reversed(s.split()))` |
 
-最后这一行是一次真实的自我修复，值得单独说：模型第一次没能给出可解析的函数，测试连跑都跑不起来；进入反思后重写，输出 `set(nums)` 去重 + 排序取 `[-2]`，并正确处理了「不足两个不同元素返回 None」——**这三个边界（重复最大值、单元素、全相同）正是需求里明确写了、而首次实现忽略掉的**。
+That third row is a real self-repair worth highlighting: the model's first output wasn't even parseable, so the tests couldn't run; after reflection it rewrote with `set(nums)` dedup + sort + `[-2]`, and correctly handled "None when fewer than two distinct elements" — **exactly the three edge cases (duplicate max, single element, all-equal) the requirement stated and the first implementation missed.**
 
-它印证了 3e 的结论：**不需要任何外部报错或审查器，仅靠「对照需求自查」就能把写漏的边界条件补回来。** 这在产品里体现为一条很实用的性质——用户可以完全不管过程，拿到的就是修正后的结果。
+It confirms 3e: **no external errors, no reviewer — just comparing behavior against the requirement recovers missed edge cases.** In the product this becomes a practical property: the user can ignore the process entirely and receive the corrected result.
 
-### 踩到的两个小模型特有的坑
+### Two small-model pitfalls we hit
 
-1. **模型爱"讲思路"**：给自然语言需求时，它会输出整段中文讲解或 thinking 而不是代码。
-   修法是提示词明确要求 "Write a Python function..."，并在提取失败时用更硬的指令重试一次。
-2. **代码块带缩进**：模型会把代码块整体缩进 4 空格（像写在引用里），直接 `ast.parse` 会报 IndentationError。
-   修法是先 `textwrap.dedent`，再从第一个 `def` 起反向找「能被 ast 解析且含函数定义的最长前缀」，
-   顺带把重复的第二个代码块和尾部的自言自语一起砍掉。
+1. **The model loves to "explain first"**: given a natural-language requirement, it outputs paragraphs of (often Chinese) reasoning instead of code.
+   Fix: the prompt demands "Write a Python function..." explicitly, and on extraction failure retry once with a harder instruction.
+2. **Indented code blocks**: the model indents whole code blocks by 4 spaces (as if quoting), so `ast.parse` raises IndentationError.
+   Fix: `textwrap.dedent` first, then walk back from the first `def` to find the longest prefix that parses and contains a function definition —
+   this also strips duplicated second code blocks and trailing self-talk.
 
 ---
 
-# 十、跨模型横评：4bit 的代价，以及闭环把它填回来多少（2026-11-04）
+# 10. Cross-model eval: what 4-bit costs, and how much of it the loop pays back (2026-11-04)
 
-前面所有结论都建立在同一个模型上。这一章回答一个此前没法回答的问题：
+Every conclusion so far concerned a single model. This chapter answers a question we couldn't answer before:
 
-> **在「2B / 4bit / 本地 / 完全离线」这个赛道里，这套流水线到底值多少？量化本身又损失了多少？**
+> **In the "2B / 4-bit / local / fully offline" niche, what is this pipeline worth? And how much does quantization itself cost?**
 
-## 设计
+## Design
 
-同一把尺子量三个模型（`scripts/bench_matrix.py`，逐题落盘、可断点续跑）：
+One yardstick, three models (`scripts/bench_matrix.py`; per-task JSONL, resumable):
 
-| 代号 | 模型 | 体积 | 说明 |
+| Code | Model | Size | Note |
 |---|---|---|---|
-| A | MiniCPM5-2B-SFT-MLX-4bit | 1.3 GB | 本地量化（本项目默认） |
-| B | openbmb/MiniCPM5-2B-MLX | 1.3 GB | 官方 4bit 量化 |
-| C | openbmb/MiniCPM5-2B-SFT | 4.7 GB | bf16 全精度，量化损失的上界 |
+| A | MiniCPM5-2B-SFT-MLX-4bit | 1.3 GB | Local quantization (project default) |
+| B | openbmb/MiniCPM5-2B-MLX | 1.3 GB | Official 4-bit quantization |
+| C | openbmb/MiniCPM5-2B-SFT | 4.7 GB | bf16 full precision — the ceiling of quantization loss |
 
-三个条件，全部 164 题：**单次贪婪** → **best-3**（第 2、3 次温度 0.8，任一通过即过）→ **best-3 仍失败再走反思重写**。提示词、模板、`max_tokens=400` 与历史实验完全一致。
+Three conditions, all 164 tasks: **single greedy** → **best-3** (samples 2–3 at temperature 0.8, any pass counts) → **reflection rewrite for best-3 failures**. Prompts, templates and `max_tokens=400` identical to all prior experiments.
 
-**量具验证**：A 的单次成绩 72.6% 与第 4 轮历史数字**一字不差**——同一模型、同一贪婪解码复现出同一结果，尺子可信。
+**Yardstick validation**: model A's single-shot score of 72.6% matches the Round-4 historical number **exactly** — same model, same greedy decoding, same result. The ruler is trustworthy.
 
-## 结果
+## Results
 
-| 模型 | 单次 | best-3 | best-3+反思 | Δ采样 | Δ反思 |
+| Model | Single | best-3 | best-3 + reflection | Δsampling | Δreflection |
 |---|---|---|---|---|---|
-| A 本地 4bit | 72.6% | 84.8% | **87.8%** | +12.2 | +3.0 |
-| B 官方 4bit | 72.0% | 79.9% | **87.8%** | +7.9 | +7.9 |
+| A local 4-bit | 72.6% | 84.8% | **87.8%** | +12.2 | +3.0 |
+| B official 4-bit | 72.0% | 79.9% | **87.8%** | +7.9 | +7.9 |
 | C bf16 | 84.1% | 89.0% | **90.2%** | +4.9 | +1.2 |
 
-配对 McNemar 精确检验（同题比较）：
+Paired McNemar exact tests (same-task comparison):
 
-| 比较 | 单次 | best-3 | 最终 |
+| Comparison | Single | best-3 | Final |
 |---|---|---|---|
 | A vs B | p=1.000 | p=0.134 | p=1.000 |
 | A vs C | **p=0.002** | p=0.143 | p=0.344 |
 | B vs C | **p=0.001** | **p=0.003** | p=0.388 |
 
-## 三个结论
+## Three conclusions
 
-**1. 4bit 量化的真实代价：单次 -11.5 pp（显著），最终只剩 -2.4 pp（不显著）。**
+**1. The real cost of 4-bit: −11.5 pp single-shot (significant), only −2.4 pp final (not significant).**
 
-单次生成上 bf16 明显更强（p<0.003），这是量化的真实损失。但走完「best-3 + 反思」后，1.3 GB 的 4bit 模型与 4.7 GB 的 bf16 **统计上已不可区分**（87.8% vs 90.2%，p=0.344）。
+On single-shot, bf16 is clearly stronger (p<0.003) — that's quantization's real cost. But after "best-3 + reflection", the 1.3 GB 4-bit model and the 4.7 GB bf16 are **statistically indistinguishable** (87.8% vs 90.2%, p=0.344).
 
-**闭环把量化损失从 11.5 pp 填回到 2.4 pp。** 换算成部署语言：**少用 3.6 倍内存，最终成绩基本不掉。**
+**The loop pays quantization's bill down from 11.5 pp to 2.4 pp.** In deployment terms: **3.6× less memory, virtually no final-score loss.**
 
-**2. 本地量化 = 官方量化。** A 与 B 单次 p=1.0（11 胜 vs 10 胜）。自己用 `mlx_lm.convert` 量化不损失任何东西，模型权重没有理由占仓库。
+**2. Local quantization = official quantization.** A vs B single-shot p=1.0 (11 wins vs 10). Quantizing yourself with `mlx_lm.convert` loses nothing — one more reason weights don't belong in the repo.
 
-**3. 流水线增益随基线递减——第三次验证同一条规律。**
+**3. Pipeline gains shrink as the baseline rises — third confirmation of the same law.**
 
-| 基线（单次） | 流水线总增益 |
+| Baseline (single-shot) | Total pipeline gain |
 |---|---|
-| 72.6%（A） | +15.2 pp |
-| 72.0%（B） | +15.8 pp |
-| 84.1%（C） | +6.1 pp |
+| 72.6% (A) | +15.2 pp |
+| 72.0% (B) | +15.8 pp |
+| 84.1% (C) | +6.1 pp |
 
-与第 4 轮「基线越高，多采样边际越小」（+20 → +10 pp）完全同构。**这套流水线的定位由此清晰：它不是给强模型锦上添花的，它是给弱模型雪中送炭的**——基线越弱，它买回的 pp 越多。
+Perfectly isomorphic to Round 4's "higher baseline, smaller sampling marginal" (+20 → +10 pp). **The pipeline's position is now clear: it's a lifeline for weak models, not a polish for strong ones** — the weaker the baseline, the more points it buys back.
 
-## 必须诚实说的限制
+## Honest limitations
 
-- **反思修复率 39.4%（B）> 20.0%（A）> 11.1%（C）主要是选择偏差，不是 B 更聪明**：b3 阶段筛选越强的模型，漏下来的失败题越难，反思自然越难修。看最终通过率即可，这一行的组间差异不要过度解读。
-- **p=0.344 不显著 ≠ 证明相等。** 164 题的检验功效有限，若真实差距是 3~4 pp，这个样本量检不出来。正确的说法是「差距小于 164 题能分辨的范围」。
-- A 的 best-3（84.8%）高于历史（82.9%），差异来自采样随机性（每题温度 0.8 只采 2 次），属正常波动。
-- 三个模型的最终成绩都收敛到 88~90%——**HumanEval 上的天花板可能就在这一带**，继续堆预算预计收益很小。
+- **Reflection repair rates 39.4% (B) > 20.0% (A) > 11.1% (C) are mostly selection bias, not B being smarter**: the stronger the best-3 filter, the harder the tasks it leaks through, and the harder they are to reflect-fix. Read the final pass rates; don't over-read that middle column.
+- **p=0.344 not significant ≠ proof of equality.** 164 tasks have limited power; a true 3–4 pp gap would go undetected. The correct statement is "the gap is smaller than 164 tasks can resolve".
+- A's best-3 (84.8%) is above its historical 82.9% — sampling randomness (only 2 temperature-0.8 draws per task), normal variance.
+- All three models converge to 88–90% — **HumanEval's ceiling probably lives around here**; more budget should buy little.
 
-## 复现
+## Reproduce
 
 ```bash
 python3 scripts/bench_matrix.py --model /path/to/model --out bench_x.jsonl
 python3 scripts/summarize_bench.py bench_*.jsonl
 ```
 
-逐题结果在 `/Volumes/LLM/logs/bench_{A_ours_2b_4bit,B_official_2b_4bit,C_2b_bf16}.jsonl`。
+Per-task results: `/Volumes/LLM/logs/bench_{A_ours_2b_4bit,B_official_2b_4bit,C_2b_bf16}.jsonl`.
 
 ---
 
-# 十一、HumanEval+ 复判：86.6% 里有多少是真本事（2026-11-04）
+# 11. Re-judged on HumanEval+: how much of 86.6% is real skill (2026-11-04)
 
-前面所有通过率都是拿 **HumanEval 自带的测试**判的——它以测试稀疏著称。这一章换上 **HumanEval+**（同样的 164 题，测试量约 80 倍）重新审判，回答一个问题：
+All pass rates so far were judged by **HumanEval's own tests** — famously sparse. This chapter re-judges everything under **HumanEval+** (same 164 tasks, ~80× more tests), asking one question:
 
-> **报告里的数字，有多少是模型真会，有多少只是骗过了稀疏测试？**
+> **Of the numbers in this report, how much is real skill, and how much merely fooled a sparse test suite?**
 
-## 量具
+## The yardstick
 
-- 官方 `evalplus.evaluate` 在 macOS 上不可用（沙箱用 `resource.setrlimit` 限内存，直接炸掉，全部判 0）——又一个"量具本身先坏"的案例。
-- 改用自建复判器 `scripts/evalplus_local.py`：期望输出 = 官方 canonical_solution 在同一输入上的运行结果，浮点按 atol 比对。
-- **交叉验证**：它对 base 测试的判定与我们的 `run_test` 完全一致（119/164，一字不差）。
+- The official `evalplus.evaluate` is unusable on macOS (its sandbox sets `resource.setrlimit`, which explodes and scores everything 0) — yet another case of "the measuring instrument breaks first".
+- Replaced with a local re-judge, `scripts/evalplus_local.py`: expected output = the official `canonical_solution` run on the same input; floats compared with atol.
+- **Cross-validation**: its verdicts on the base tests match our `run_test` exactly (119/164, identical).
 
-## 实验设计
+## Design
 
-同一模型（A，本地 4bit），同一生成流程，唯一改变**裁判**：`bench_matrix.py --plus`。判定、筛选、反思验证全部改用 plus 测试；同一份代码同时记录两把尺子的判定。生成代码这次也落盘，以后复判不用重新生成。
+Same model (A, local 4-bit), same generation procedure — the only change is the **judge**: `bench_matrix.py --plus`. Judging, filtering and reflection verification all switch to plus tests; every piece of code is recorded under both yardsticks. Generated code is now saved to disk, so future re-judging needs no regeneration.
 
-## 结果
+## Results
 
-| 阶段 | HumanEval 判 | HumanEval+ 判 | 假阳性 |
+| Stage | HumanEval verdict | HumanEval+ verdict | False positives |
 |---|---|---|---|
-| 单次 | 72.6% (119) | **68.9%** (113) | 6 题（5.0%） |
-| best-3 | 81.1% (133) | **78.0%** (128) | 5 题（3.8%） |
-| +反思 | 82.3% (135) | **79.9%** (131) | 4 题（3.0%） |
+| Single | 72.6% (119) | **68.9%** (113) | 6 tasks (5.0%) |
+| best-3 | 81.1% (133) | **78.0%** (128) | 5 tasks (3.8%) |
+| + reflection | 82.3% (135) | **79.9%** (131) | 4 tasks (3.0%) |
 
-## 四个结论
+## Four conclusions
 
-**1. 单次成绩缩水 3.7 pp，5.0% 的"通过"是假阳性。** 模型写出的代码里，每 20 个"过测试"的就有 1 个在更严的测试下露馅。
+**1. Single-shot shrinks 3.7 pp; 5.0% of "passes" are false positives.** One in every 20 passing solutions collapses under the stricter tests.
 
-**2. 假阳性比例沿流水线递减（5.0% → 3.8% → 3.0%），绝对数量也在降（6 → 5 → 4）。** 这是本次最意外的发现：**测试筛选和反思修复不仅没有"迎合稀疏测试"，反而顺手清洗了 2 个假阳性**——选出的候选或修复后的代码，碰巧在更严的测试下也站得住。闭环没有放大量具漏洞。
+**2. The false-positive share falls along the pipeline (5.0% → 3.8% → 3.0%), and so do the absolute counts (6 → 5 → 4).** The most surprising finding: **test-based filtering and reflection repair do not pander to the sparse suite — they incidentally cleaned up 2 false positives**. The chosen candidates and repaired code happened to survive the stricter tests too. The loop does not amplify the yardstick's blind spots.
 
-**3. 流水线的增益在严格裁判下大部分存活。** 68.9% → 79.9%，仍 +11.0 pp（宽松尺子下是 +9.7~15.2 pp，跨跑有采样噪声）。**「提分靠算力+验证」这个结论不依赖测试集的松紧。**
+**3. Most of the pipeline's gain survives strict judging.** 68.9% → 79.9%, still +11.0 pp (vs +9.7~15.2 pp under the lenient ruler, with cross-run sampling noise). **"Gains come from compute + verification" does not depend on how lenient the test suite is.**
 
-**4. SGSR 的修复率在严格裁判下缩水：20% → 8.3%（3/36）。** 但样本只有 36 道失败题，3 题的差别完全在噪声范围内——**只能说"修复率更低了"，不能说"降到多少"**。
+**4. SGSR's repair rate shrinks under strict judging: 20% → 8.3% (3/36).** But with only 36 failing tasks, a 3-task difference is entirely within noise — we can say "lower", not "lowered to what".
 
-## 必须诚实说的
+## Honest notes
 
-- **两跑之间有 ±3 pp 的采样噪声**（同模型同脚本，base 判定一次 84.8%、一次 81.1%）。结论看方向和量级，不要抠小数点。
-- 单次 68.9% 这个数，**换裁判不换生成**——生成时的温度采样与上一次跑不是同一批随机数，所以 68.9 与 72.6 的差 = 真实测试更严（约 -3.7）+ 采样噪声的混合。
-- 前沿模型在 HumanEval+ 上同样普遍 90% 上下，基准本身也在饱和。79.9%（2B / 4bit / 1.3 GB）在这个尺子下依然能打，但差距比 HumanEval 口径看到的更大。
+- **Cross-run sampling noise is ±3 pp** (same model, same script; base-judged best-3 was 84.8% once and 81.1% another time). Read direction and magnitude, not decimal points.
+- The 68.9% single-shot figure **changes the judge but not the generation** — the temperature sampling drew different random numbers than the earlier run, so 68.9 vs 72.6 mixes "stricter tests" (~−3.7) with sampling noise.
+- Frontier models also sit around 90% on HumanEval+ — the benchmark itself is saturating. 79.9% (2B / 4-bit / 1.3 GB) still holds up on this ruler, but the gap to the frontier is wider than the HumanEval lens suggests.
 
-## 复现
+## Reproduce
 
 ```bash
-python3 scripts/evalplus_local.py judge --samples samples.jsonl   # 复判已有代码
-python3 scripts/bench_matrix.py --model <path> --plus --out x.jsonl  # 全闭环换裁判重跑
+python3 scripts/evalplus_local.py judge --samples samples.jsonl   # re-judge existing code
+python3 scripts/bench_matrix.py --model <path> --plus --out x.jsonl  # full loop under the strict judge
 ```
 
-逐题明细：`/Volumes/LLM/logs/benchplus_A.jsonl`（含 base/plus 双判定与最终代码）。
+Per-task detail: `/Volumes/LLM/logs/benchplus_A.jsonl` (base/plus dual verdicts plus final code).
