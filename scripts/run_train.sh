@@ -6,7 +6,7 @@
 # 用法: nohup caffeinate -dimsu ./run_train.sh &
 set -u
 
-CONFIG="$(dirname "$0")/train_lora.yaml"
+CONFIG=""$(cd "$(dirname "$0")" && pwd)/train_lora.yaml""
 ADAPTER_DIR="/Volumes/LLM/adapters/executor-v1"
 LOG="/Volumes/LLM/logs/train.log"
 MAX_RETRY=5

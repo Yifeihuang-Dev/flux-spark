@@ -12,3 +12,4 @@ checkpoints/
 # 日志与中间结果
 logs/
 *.log
+data_local/
