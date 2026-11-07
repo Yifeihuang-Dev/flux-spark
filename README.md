@@ -30,6 +30,8 @@ How to read it: quantization costs 11.5 pp on single-shot (significant), but aft
 
 Under strict judging (HumanEval+, ~80× more tests), the loop's final score is **79.9%** — the same level as Gemini 1.5 Pro's *single-shot* 79.3% on the same benchmark (see report, Chapter 11).
 
+Head-to-head against the strongest open ~1.5B coder, **same harness, same tasks, same budget** (2026-11-06): Qwen2.5-Coder-1.5B-Instruct-4bit scores 59.8% single / 72.0% final, vs 72.6% / 87.8% here — **+15.8 pp final, paired McNemar p=0.00001** (31 wins, 5 losses). Two side findings: the loop **transfers across model families** (it bought Qwen +12.2 pp too), and its repair yield depends on the model (20% here vs 8% on Qwen).
+
 ## Quick start
 
 Requires Python 3 + `pip install mlx-lm` (Apple Silicon).
@@ -88,15 +90,22 @@ In tests, use `f()` as a placeholder for the function name; the CLI rewrites it 
 ## Current limits
 
 - **The CLI currently supports Python only.** In probes the model did write correct SQL (3/3, standard window functions), Ruby, Bash and Rust — the limit is the wrapper, not the model. A multi-language plan lives in `scripts/probe_multilang.py`.
-- The default model path is an external SSD on the author's machine; pass `--model` with your own SFT base — the pipeline is base-agnostic. Weights are **not** in this repo; see below.
+- The pipeline is base-agnostic: pass `--model` with any MLX model directory (see [Getting the weights](#getting-the-weights)).
 
-## Why the weights are not in the repo
+## Getting the weights
 
-The model is a **4-bit MLX quantization** of `MiniCPM5-2B-SFT` (1.3 GB). It is not — and need not be — in this repository:
+The model is a **4-bit MLX quantization** of `MiniCPM5-2B-SFT` (1.3 GB). Two ways to get it:
 
-1. **It wouldn't fit.** GitHub rejects files over 100 MB; Git LFS free tier is 1 GB storage + 1 GB/month bandwidth — a single weight exhausts both.
-2. **It is not this project's artifact.** The weights are a quantization of the public base `openbmb/MiniCPM5-2B-SFT` — all architecture hyperparameters match item by item (`hidden_size 2048` / `42 layers` / `16 heads` / `vocab 130560` / `131072 context`); locally we only added `bits=4, group_size=64`. The conversion log reads `Quantized model with 4.501 bits per weight`.
-3. **One command reproduces it.** Instead of downloading 1.3 GB, convert locally:
+**Option A — download from Hugging Face** (fastest):
+
+```bash
+hf download Issingggggg/MiniCPM5-2B-SFT-MLX-4bit --local-dir ./MiniCPM5-2B-SFT-MLX-4bit
+python3 fluxspark.py -i --model ./MiniCPM5-2B-SFT-MLX-4bit
+```
+
+The HF repo ships a full model card: quantization details, measured benchmarks, limitations, and license/attribution (Apache-2.0, inherited from the base).
+
+**Option B — convert it yourself** (one command, fully reproducible):
 
 ```bash
 mlx_lm.convert --hf-path openbmb/MiniCPM5-2B-SFT \
@@ -106,4 +115,6 @@ mlx_lm.convert --hf-path openbmb/MiniCPM5-2B-SFT \
 ./scripts/fetch_models.sh base        # built into the script
 ```
 
-> If you want to publish ready-to-download weights (e.g. to spare others the conversion), the right home is the **Hugging Face Hub**: free, unlimited, built for weights, with resumable downloads. `mlx_lm.convert` supports `--upload-repo` to push directly. GitHub is for code; Hugging Face is for models.
+Both produce byte-identical weights (local conversion log: `Quantized model with 4.501 bits per weight`; all architecture hyperparameters match the base item by item).
+
+> Why not commit weights to GitHub: files over 100 MB are rejected, and Git LFS's free tier (1 GB storage + 1 GB/month) is exhausted by a single weight. GitHub is for code; Hugging Face is for models.
